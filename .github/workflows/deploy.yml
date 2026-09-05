@@ -1,0 +1,80 @@
+name: Deploy to Hostinger
+
+# Runs on every push to main, or manually from the Actions tab (useful for
+# re-deploying without a new commit — e.g. after changing a secret).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    # windows-latest, not ubuntu — build-for-hosting.ps1 uses `robocopy`,
+    # which is a Windows-only tool. Running the exact same script here that
+    # a person double-clicks locally means CI produces byte-for-byte the
+    # same `release/public_html` and `release/erp` folders either way —
+    # one build process, not two to keep in sync.
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      # Same script BUILD FOR HOSTING.bat runs — see HOSTINGER-DEPLOYMENT.md.
+      # -NoPause skips the "press Enter" prompt, which would otherwise hang
+      # forever with no one there to press it.
+      - name: Build the release package
+        shell: pwsh
+        run: ./build-for-hosting.ps1 -NoPause
+
+      # ---- Deploy erp/ (the Laravel app, outside the web root) ----
+      #
+      # `exclude` isn't just "don't upload these" — this action mirrors the
+      # server to match the local folder, so anything not excluded that
+      # also doesn't exist locally gets DELETED remotely. The build script
+      # always produces `storage/app/public`, `storage/logs`, etc. as empty
+      # placeholder folders (real uploads and logs live only on the server,
+      # never in a fresh build) — without these excludes, the first deploy
+      # would silently wipe every employee photo and the company logo, and
+      # every deploy after that would erase them again.
+      - name: Deploy erp/
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ./release/erp/
+          server-dir: ${{ secrets.FTP_ERP_REMOTE_PATH }}
+          exclude: |
+            **/.git*
+            **/.git*/**
+            .env
+            storage/app/public/**
+            storage/app/private/backups/**
+            storage/logs/**
+
+      # ---- Deploy public_html/ (what the browser actually reaches) ----
+      #
+      # install.php is intentionally included here every time: it is meant
+      # to delete itself once the first install finishes, and re-uploading
+      # it on a later deploy is harmless since a completed install refuses
+      # to run it again (see HOSTINGER-DEPLOYMENT.md — "Already installed").
+      - name: Deploy public_html/
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ./release/public_html/
+          server-dir: ${{ secrets.FTP_PUBLIC_HTML_REMOTE_PATH }}

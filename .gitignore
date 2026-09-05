@@ -1,0 +1,13 @@
+# Build output and packaged releases — produced by build-for-hosting.ps1,
+# never the source of truth.
+/release
+/trinitas-erp-*.zip
+
+# Claude Code's own local project config/plans — not part of the app.
+/.claude
+
+# OS / editor noise not already caught by api/.gitignore or web/.gitignore
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json

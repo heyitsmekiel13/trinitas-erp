@@ -1,0 +1,56 @@
+# Trinitas ERP — live settings
+#
+# Fill in the four DB_ lines from hPanel → Databases → MySQL Databases.
+# Everything else can stay as it is.
+#
+# Keep this file private. It is stored outside public_html so the web server
+# cannot serve it, and the .htaccess blocks it as a second line of defence.
+
+APP_NAME="Trinitas ERP"
+APP_ENV=production
+
+# Generated during setup — do not edit by hand.
+APP_KEY=
+
+# Never turn this on in production: it prints database credentials and file
+# paths onto the error page for anyone who triggers an exception.
+APP_DEBUG=false
+
+# Your domain, with https and no trailing slash.
+APP_URL=https://yourdomain.com
+FRONTEND_URL=https://yourdomain.com
+
+APP_TIMEZONE=Asia/Manila
+APP_LOCALE=en
+
+# --- Database (hPanel → Databases → MySQL Databases) -------------------------
+DB_CONNECTION=mysql
+DB_HOST=localhost
+DB_PORT=3306
+DB_DATABASE=
+DB_USERNAME=
+DB_PASSWORD=
+
+# --- Sessions, cache, queue --------------------------------------------------
+# Database-backed so nothing depends on Redis, which shared hosting lacks.
+SESSION_DRIVER=database
+SESSION_LIFETIME=120
+SESSION_SECURE_COOKIE=true
+SESSION_SAME_SITE=lax
+
+CACHE_STORE=database
+QUEUE_CONNECTION=database
+
+# --- Logging -----------------------------------------------------------------
+# Daily files, kept 14 days, so the log cannot fill the hosting quota.
+LOG_CHANNEL=daily
+LOG_LEVEL=warning
+LOG_DAILY_DAYS=14
+
+# --- Mail --------------------------------------------------------------------
+# Leave these alone. SMTP is configured inside the app at
+# Admin → System Settings → Email, and stored encrypted in the database.
+MAIL_MAILER=smtp
+
+# --- Security ----------------------------------------------------------------
+BCRYPT_ROUNDS=12

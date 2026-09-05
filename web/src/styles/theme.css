@@ -1,0 +1,415 @@
+@import 'tailwindcss';
+
+/* Dark mode is driven by <html data-theme="dark">, set before first paint. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* ---------------------------------------------------------------------------
+   1. RAW SCALES — fixed values, identical in both themes.
+--------------------------------------------------------------------------- */
+@theme {
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, monospace;
+
+  /* Brand — gradient red. 500 is the solid primary (4.6:1 on white). */
+  --color-brand-50: #fff1f2;
+  --color-brand-100: #ffe1e4;
+  --color-brand-200: #ffc7cd;
+  --color-brand-300: #ff9ca6;
+  --color-brand-400: #ff5c68;
+  --color-brand-500: #e11d34;
+  --color-brand-600: #c2142b;
+  --color-brand-700: #9d1024;
+  --color-brand-800: #7d0f1f;
+  --color-brand-900: #66111d;
+  --color-brand-950: #3a040c;
+
+  /* Chart series — validated (adjacent CVD ΔE 9.1 light / 8.4 dark). Order is
+     the colorblind-safety mechanism: assign slot 1..8 in order, never cycle. */
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+  --color-series-3: var(--series-3);
+  --color-series-4: var(--series-4);
+  --color-series-5: var(--series-5);
+  --color-series-6: var(--series-6);
+  --color-series-7: var(--series-7);
+  --color-series-8: var(--series-8);
+
+  /* Status — reserved meanings, never reused as a series colour. */
+  --color-good: #0ca30c;
+  --color-warning: #fab219;
+  --color-serious: #ec835a;
+  --color-critical: #d03b3b;
+
+  --radius-card: 0.875rem;
+  --radius-control: 0.5rem;
+
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Semantic roles resolve through vars so one declaration flips both themes. */
+@theme inline {
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-grid: var(--grid);
+}
+
+/* ---------------------------------------------------------------------------
+   2. SEMANTIC TOKENS — light is the default, dark is separately chosen.
+--------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+
+  --page: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #f8f9fb;
+  --surface-3: #eef0f4;
+  --line: #e4e7ec;
+  --line-strong: #d2d7df;
+  --ink: #0d0f14;
+  --ink-2: #4b5262;
+  --ink-3: #79808e;
+  --grid: #eceef2;
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+
+  --delta-up: #006300;
+  --delta-down: #c2142b;
+
+  --shadow-card: 0 1px 2px rgb(13 15 20 / 0.04), 0 1px 3px rgb(13 15 20 / 0.06);
+  --shadow-pop: 0 4px 6px -2px rgb(13 15 20 / 0.06), 0 12px 28px -6px rgb(13 15 20 / 0.16);
+
+  /* The signature gradient. One definition, used by every brand surface. */
+  --grad-brand: linear-gradient(135deg, #ff5c68 0%, #e11d34 48%, #9d1024 100%);
+  --grad-brand-soft: linear-gradient(135deg, #fff1f2 0%, #ffe1e4 100%);
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --page: #0e0f12;
+  --surface: #17181c;
+  --surface-2: #1d1f24;
+  --surface-3: #24262c;
+  --line: #292c33;
+  --line-strong: #3a3e46;
+  --ink: #f4f5f7;
+  --ink-2: #b6bcc6;
+  --ink-3: #868d99;
+  --grid: #24262c;
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+
+  --delta-up: #0ca30c;
+  --delta-down: #ff5c68;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-pop: 0 12px 32px -8px rgb(0 0 0 / 0.6);
+
+  --grad-brand: linear-gradient(135deg, #ff5c68 0%, #d61a30 50%, #7d0f1f 100%);
+  --grad-brand-soft: linear-gradient(135deg, #2a1216 0%, #1f1418 100%);
+}
+
+/* ---------------------------------------------------------------------------
+   3. BASE
+--------------------------------------------------------------------------- */
+@layer base {
+  * {
+    border-color: var(--line);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    scrollbar-gutter: stable;
+  }
+
+  body {
+    background-color: var(--page);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand-500);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Numbers that stack vertically must align; standalone figures must not. */
+  th,
+  td.num,
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    border-radius: 999px;
+    border: 3px solid var(--page);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--ink-3);
+  }
+
+  /* The sign-in backdrop is exempted by name rather than fought from another
+     rule: this reset lives in a layer, and for `!important` declarations layer
+     order is inverted, so nothing outside the layer can override it. */
+  @media (prefers-reduced-motion: reduce) {
+    *:not(.drift-icon, .drift-cell),
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   4. UTILITIES
+--------------------------------------------------------------------------- */
+@utility grad-brand {
+  background-image: var(--grad-brand);
+}
+
+@utility grad-brand-soft {
+  background-image: var(--grad-brand-soft);
+}
+
+@utility grad-text {
+  background-image: var(--grad-brand);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+@utility card {
+  background-color: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+/* Skeleton shimmer used while a page's data resolves. */
+@utility shimmer {
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+/* Drifting backdrop icons on the sign-in screen.
+
+   One keyframe, but every waypoint reads from a custom property the element
+   sets for itself — so each icon traces its own wandering path rather than
+   sharing one bob with a different delay. Four waypoints and a long duration
+   are what make it read as drifting rather than bouncing. */
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(var(--d-r0, 0deg));
+  }
+  25% {
+    transform: translate3d(calc(var(--d-x1, 0px) * var(--d-amp, 1)), calc(var(--d-y1, 0px) * var(--d-amp, 1)), 0)
+      rotate(var(--d-r1, 0deg));
+  }
+  50% {
+    transform: translate3d(calc(var(--d-x2, 0px) * var(--d-amp, 1)), calc(var(--d-y2, 0px) * var(--d-amp, 1)), 0)
+      rotate(var(--d-r2, 0deg));
+  }
+  75% {
+    transform: translate3d(calc(var(--d-x3, 0px) * var(--d-amp, 1)), calc(var(--d-y3, 0px) * var(--d-amp, 1)), 0)
+      rotate(var(--d-r3, 0deg));
+  }
+}
+
+/* The two animations live here rather than inline so the reduced-motion rule
+   below has something specific enough to override. Each element supplies its
+   own duration and delay. */
+.drift-cell {
+  animation: drift-fade var(--d-fade-dur, 16s) ease-in-out var(--d-fade-delay, 0s) infinite;
+  will-change: opacity;
+}
+
+.drift-icon {
+  animation: drift var(--d-dur, 50s) ease-in-out var(--d-delay, 0s) infinite;
+  will-change: transform;
+}
+
+/* A slow, independent opacity sway. Runs on its own clock so an icon does not
+   reach its farthest point and its faintest point at the same moment. */
+@keyframes drift-fade {
+  0%,
+  100% {
+    opacity: var(--d-o-min, 0.05);
+  }
+  50% {
+    opacity: var(--d-o-max, 0.1);
+  }
+}
+
+/* The blanket reduced-motion reset in the base layer collapses every animation
+   to 0.01ms, which froze this backdrop solid. The drift is deliberately exempt:
+   it is ambient decoration behind a sign-in card, not something that moves
+   content under the pointer or competes for attention.
+
+   It is damped rather than exempt outright — around two-thirds of the travel,
+   a little slower — so a machine asking for less motion gets a gentler drift
+   rather than a still image. Damping it to nothing was the same as the freeze
+   it was meant to fix. */
+@media (prefers-reduced-motion: reduce) {
+  .drift-icon {
+    animation-duration: calc(var(--d-dur, 30s) * 1.3);
+    --d-amp: 0.65;
+  }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@utility animate-in {
+  animation: fade-in-up 0.18s var(--ease-out-soft) both;
+}
+
+/* ---------------------------------------------------------------------------
+   5. PRINT — every dashboard and report exports through this stylesheet.
+      Nothing here is decorative: it is the PDF renderer.
+--------------------------------------------------------------------------- */
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm 12mm 16mm;
+  }
+
+  :root,
+  [data-theme='dark'] {
+    color-scheme: light;
+    --page: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #ffffff;
+    --surface-3: #ffffff;
+    --line: #d0d5dd;
+    --line-strong: #98a2b3;
+    --ink: #000000;
+    --ink-2: #333333;
+    --ink-3: #555555;
+    --grid: #e4e7ec;
+    --shadow-card: none;
+    --shadow-pop: none;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+  }
+
+  /* Chrome disappears; only the report content survives onto paper. */
+  [data-print='hide'] {
+    display: none !important;
+  }
+
+  [data-print='only'] {
+    display: block !important;
+  }
+
+  [data-print='break-before'] {
+    break-before: page;
+  }
+
+  [data-print='keep'] {
+    break-inside: avoid;
+  }
+
+  .card {
+    box-shadow: none !important;
+    border: 1px solid #d0d5dd !important;
+  }
+
+  a[href]::after {
+    content: '';
+  }
+
+  /*
+   * A table built for the screen carries a `min-w-[Nrem]` so it scrolls
+   * sideways in its own box rather than squashing on a laptop — the DTR
+   * table, the masterfile grid, and others like them. `min-width` beats
+   * `max-width: 100%` whenever the two conflict, so that on-screen safety
+   * net was doing nothing the moment a table's own minimum exceeded what a
+   * printed page can hold: A4 minus this stylesheet's own margins leaves
+   * about 186mm, and a table asking for 52rem (832px, ≈220mm) never fit —
+   * columns past the page edge were silently never on the paper at all,
+   * not merely cramped.
+   *
+   * Zeroing the minimum here is what actually lets `max-width: 100%` do its
+   * job: the table shrinks to the page instead of overflowing it. The
+   * smaller type and tighter cells are what keeps a nine- or ten-column
+   * table legible once it has been asked to fit in two-thirds the width it
+   * wanted — this is the one rule that makes every wide table already
+   * routed through this stylesheet print completely, not a fix scoped to
+   * one screen.
+   */
+  table {
+    min-width: 0 !important;
+    width: 100% !important;
+    table-layout: auto;
+    font-size: 9pt;
+  }
+
+  th,
+  td {
+    padding: 3px 5px !important;
+    overflow-wrap: break-word;
+  }
+}
+
+/* On screen, print-only blocks stay out of the way. */
+[data-print='only'] {
+  display: none;
+}
