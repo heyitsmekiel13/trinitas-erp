@@ -394,11 +394,16 @@ const monthKey = (iso: string | null) => (iso ? iso.slice(0, 7) : null)
  * showing it — but excluded from the trend, where a single typo would stretch
  * the axis across thirty empty years and flatten every real month.
  */
-function plausible(iso: string | null) {
+export function plausible(iso: string | null) {
   if (!iso) return false
   const year = Number(iso.slice(0, 4))
   const now = new Date().getFullYear()
   return year >= now - 6 && year <= now + 1
+}
+
+/** The date a job is filed under: when it was repaired, or failing that, when it was requested. */
+export function effectiveJobDate(job: ServiceJob): string | null {
+  return plausible(job.repairedOn) ? job.repairedOn : plausible(job.submittedOn) ? job.submittedOn : null
 }
 
 /**
@@ -463,8 +468,7 @@ export function summarise(jobs: ServiceJob[]): AfterSalesSummary {
       if (value) byCost.set(name, (byCost.get(name) ?? 0) + value)
     }
 
-    const dated = plausible(job.repairedOn) ? job.repairedOn : plausible(job.submittedOn) ? job.submittedOn : null
-    const key = monthKey(dated)
+    const key = monthKey(effectiveJobDate(job))
     if (key) {
       const month = byMonth.get(key) ?? { revenue: 0, costs: 0, jobs: 0 }
       byMonth.set(key, {

@@ -270,11 +270,15 @@ export function Menu({
   trigger,
   children,
   align = 'end',
+  placement = 'bottom',
   className,
 }: {
   trigger: (props: { open: boolean; toggle: () => void }) => React.ReactNode
   children: React.ReactNode | ((close: () => void) => React.ReactNode)
   align?: 'start' | 'end'
+  /** 'top' opens upward from the trigger — for a menu docked in a bottom footer, where
+   *  opening downward would render past the dialog's own edge and get clipped invisible. */
+  placement?: 'bottom' | 'top'
   className?: string
 }) {
   const [open, setOpen] = React.useState(false)
@@ -303,7 +307,8 @@ export function Menu({
         <div
           role="menu"
           className={cn(
-            'animate-in absolute z-50 mt-1.5 min-w-52 rounded-xl border border-line bg-surface p-1 shadow-[var(--shadow-pop)]',
+            'animate-in absolute z-50 min-w-52 rounded-xl border border-line bg-surface p-1 shadow-[var(--shadow-pop)]',
+            placement === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5',
             align === 'end' ? 'right-0' : 'left-0',
             className,
           )}

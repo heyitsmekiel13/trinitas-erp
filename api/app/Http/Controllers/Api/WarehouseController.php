@@ -18,10 +18,16 @@ use Illuminate\Support\Facades\Cache;
  */
 class WarehouseController extends Controller
 {
-    public function dashboard(WarehouseAnalytics $analytics): JsonResponse
+    public function dashboard(Request $request, WarehouseAnalytics $analytics): JsonResponse
     {
+        $period = (string) $request->query('period', 'mtd');
+        $from = $request->query('from');
+        $to = $request->query('to');
+        $grain = $request->query('grain');
+        $key = 'warehouse-dashboard:'.md5(implode('|', [$period, $from, $to, $grain]));
+
         return response()->json([
-            'data' => Cache::remember('warehouse-dashboard', 60, fn () => $analytics->dashboard()),
+            'data' => Cache::remember($key, 60, fn () => $analytics->dashboard($period, $from, $to, $grain)),
         ]);
     }
 

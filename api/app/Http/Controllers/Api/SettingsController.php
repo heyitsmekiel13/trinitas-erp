@@ -61,6 +61,13 @@ class SettingsController extends Controller
                 'enabled' => false,
                 'bypass_roles' => ['process-officer', 'process-manager', 'executive'],
             ],
+            // Shipped as the 10th/25th pattern most Philippine employers use.
+            // Installs from before this setting existed still get a real
+            // value here rather than an empty box.
+            'payroll' => [
+                'first_half_pay_day' => 25,
+                'second_half_pay_day' => 10,
+            ],
             'security' => [
                 'min_password_length' => 4,
                 // Two years — long enough to cover a typical annual audit
@@ -251,6 +258,12 @@ class SettingsController extends Controller
                 'statutory_schedule' => ['required', Rule::in(['first', 'second', 'split'])],
                 'working_days_factor' => ['required', 'integer', 'between:200,366'],
                 'hours_per_day' => ['required', 'integer', 'between:1,24'],
+                // The calendar day each cut-off is actually paid on — the
+                // 1st–15th cut-off pays out the same month, the 16th–end
+                // cut-off the following one. `generatePeriods()` reads these
+                // instead of guessing a pay date from a lag after the cut-off.
+                'first_half_pay_day' => ['required', 'integer', 'between:1,31'],
+                'second_half_pay_day' => ['required', 'integer', 'between:1,31'],
             ],
             // Delivery estimates are only as good as these. They are settings
             // rather than constants so they can be calibrated against real
@@ -299,7 +312,10 @@ class SettingsController extends Controller
                 'min_password_length' => 'integer', 'audit_retention_days' => 'integer',
             ],
             'department_access' => ['enabled' => 'boolean', 'bypass_roles' => 'json'],
-            'payroll' => ['working_days_factor' => 'integer', 'hours_per_day' => 'integer'],
+            'payroll' => [
+                'working_days_factor' => 'integer', 'hours_per_day' => 'integer',
+                'first_half_pay_day' => 'integer', 'second_half_pay_day' => 'integer',
+            ],
             'logistics' => ['handlingMinutes' => 'integer'],
             'timekeeping' => [
                 'require_punch_pin' => 'boolean',

@@ -10,6 +10,7 @@ use App\Models\StockBalance;
 use App\Models\StockMovement;
 use App\Models\StockTransfer;
 use App\Models\Warehouse;
+use App\Services\Concerns\ResolvesDashboardWindow;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 
@@ -23,54 +24,85 @@ use Illuminate\Support\Collection;
  */
 class WarehouseAnalytics
 {
+    use ResolvesDashboardWindow;
+
     private const DAYS = 30;
 
     public function __construct(private readonly WarehouseOperations $operations) {}
 
-    public function dashboard(): array
-    {
+    public function dashboard(
+        string $period = 'mtd',
+        ?string $from = null,
+        ?string $to = null,
+        ?string $grain = null,
+    ): array {
         $now = CarbonImmutable::now();
 
+        [$start, $end, $grain, $label, $priorStart, $priorEnd] = $this->resolveWindow(
+            $period, $from, $to, $grain, $now,
+            fn (CarbonImmutable $now) => CarbonImmutable::parse(StockMovement::min('moved_at') ?? $now->subYear())->startOfDay(),
+        );
+
+        // Balances are a snapshot of right now — a stock count has no "as of
+        // last quarter" — so the Period filter scopes only the movement log
+        // below, not what is currently on the shelf.
         $balances = StockBalance::query()
             ->with('item')
             ->where('on_hand', '>', 0)
             ->get();
 
         $movements = StockMovement::query()
-            ->where('moved_at', '>=', $now->startOfDay()->subDays(self::DAYS - 1))
+            ->whereBetween('moved_at', [$start->toDateString(), $end->endOfDay()->toDateTimeString()])
             ->get(['direction', 'reason', 'quantity', 'unit_cost', 'moved_at']);
 
         return [
-            'throughput' => $this->throughput($movements, $now),
+            'throughput' => $this->throughput($movements, $grain, $start, $end),
             'statusMix' => $this->statusMix($balances),
             'valueByCategory' => $this->valueByCategory($balances),
             'valueByWarehouse' => $this->valueByWarehouse(),
             'expiring' => $this->operations->expiringStock(60)->take(10)->values()->all(),
-            'kpis' => $this->kpis($balances, $movements, $now),
+            'kpis' => $this->kpis($balances, $movements, $start, $end),
             'generatedAt' => $now->toIso8601String(),
+            'window' => [
+                'period' => $period,
+                'grain' => $grain,
+                'from' => $start->toDateString(),
+                'to' => $end->toDateString(),
+                'label' => $label,
+                'days' => $start->diffInDays($end) + 1,
+                'compare' => [
+                    'from' => $priorStart->toDateString(),
+                    'to' => $priorEnd->toDateString(),
+                    'label' => $priorStart->format('j M Y').' – '.$priorEnd->format('j M Y'),
+                ],
+            ],
         ];
     }
 
-    /** Units in and out per day, which is what a shift supervisor watches. */
-    private function throughput(Collection $movements, CarbonImmutable $now): array
+    /** Units in and out per bucket, which is what a shift supervisor watches. */
+    private function throughput(Collection $movements, string $grain, CarbonImmutable $start, CarbonImmutable $end): array
     {
-        $byDay = $movements->groupBy(fn ($m) => CarbonImmutable::parse($m->moved_at)->format('Y-m-d'));
+        $byBucket = $movements->groupBy(fn ($m) => $this->windowBucketKey($grain, CarbonImmutable::parse($m->moved_at)));
 
-        $days = [];
-        for ($i = self::DAYS - 1; $i >= 0; $i--) {
-            $day = $now->startOfDay()->subDays($i);
-            $rows = $byDay->get($day->format('Y-m-d'), collect());
+        $rows = [];
+        $cursor = $this->windowFloorTo($grain, $start);
+        $guard = 0;
 
-            $days[] = [
-                'key' => $day->format('Y-m-d'),
-                'day' => $day->format('j M'),
-                'received' => round($rows->where('direction', 'in')->sum(fn ($m) => (float) $m->quantity), 2),
-                'issued' => round($rows->where('direction', 'out')->sum(fn ($m) => (float) $m->quantity), 2),
-                'movements' => $rows->count(),
+        while ($cursor->lte($end) && $guard++ < 4000) {
+            $bucketRows = $byBucket->get($this->windowBucketKey($grain, $cursor), collect());
+
+            $rows[] = [
+                'key' => $this->windowBucketKey($grain, $cursor),
+                'day' => $this->windowBucketLabel($grain, $cursor),
+                'received' => round($bucketRows->where('direction', 'in')->sum(fn ($m) => (float) $m->quantity), 2),
+                'issued' => round($bucketRows->where('direction', 'out')->sum(fn ($m) => (float) $m->quantity), 2),
+                'movements' => $bucketRows->count(),
             ];
+
+            $cursor = $this->windowStep($cursor, $grain);
         }
 
-        return $days;
+        return $rows;
     }
 
     /**
@@ -152,12 +184,14 @@ class WarehouseAnalytics
             ->all();
     }
 
-    private function kpis(Collection $balances, Collection $movements, CarbonImmutable $now): array
+    private function kpis(Collection $balances, Collection $movements, CarbonImmutable $start, CarbonImmutable $end): array
     {
         $stockValue = round($balances->sum(fn (StockBalance $b) => (float) $b->on_hand * (float) $b->unit_cost), 2);
 
         $counts = CycleCount::where('status', 'Posted')->get(['accuracy', 'variances', 'value_variance']);
         $replenishment = $this->operations->replenishment();
+
+        $windowDays = max($start->diffInDays($end) + 1, 1);
 
         // Cost of goods issued over the window, annualised against the stock
         // value on hand — the standard inventory turn calculation.
@@ -176,7 +210,7 @@ class WarehouseAnalytics
             // Null until there is stock to turn over — a rate of zero would
             // read as a warehouse that never ships.
             'inventoryTurns' => $stockValue > 0
-                ? round(($issuedValue * (365 / self::DAYS)) / $stockValue, 2)
+                ? round(($issuedValue * (365 / $windowDays)) / $stockValue, 2)
                 : null,
             'countAccuracy' => $counts->isEmpty() ? null : round($counts->avg('accuracy'), 1),
             'countVariances' => (int) $counts->sum('variances'),

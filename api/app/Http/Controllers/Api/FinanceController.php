@@ -26,10 +26,16 @@ use Illuminate\Support\Facades\Cache;
  */
 class FinanceController extends Controller
 {
-    public function dashboard(FinanceAnalytics $analytics): JsonResponse
+    public function dashboard(Request $request, FinanceAnalytics $analytics): JsonResponse
     {
+        $period = (string) $request->query('period', 'ytd');
+        $from = $request->query('from');
+        $to = $request->query('to');
+        $grain = $request->query('grain');
+        $key = 'finance-dashboard:'.md5(implode('|', [$period, $from, $to, $grain]));
+
         return response()->json([
-            'data' => Cache::remember('finance-dashboard', 60, fn () => $analytics->dashboard()),
+            'data' => Cache::remember($key, 60, fn () => $analytics->dashboard($period, $from, $to, $grain)),
         ]);
     }
 

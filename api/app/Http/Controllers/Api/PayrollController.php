@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Services\AubTemplateExporter;
 use App\Services\PayrollAdjustments;
 use App\Services\PayrollEngine;
+use App\Services\Settings;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -32,6 +33,7 @@ class PayrollController extends Controller
     public function __construct(
         private readonly PayrollEngine $engine,
         private readonly PayrollAdjustments $adjustments,
+        private readonly Settings $settings,
     ) {}
 
     /**
@@ -40,21 +42,27 @@ class PayrollController extends Controller
      * The 1st–15th and 16th–end pattern every Philippine payroll uses. Doing
      * it in one action rather than twenty-four forms is the difference between
      * payroll being set up and payroll being abandoned halfway through.
+     *
+     * Pay dates come from the company's own pay schedule (Settings →
+     * Payroll), not a guessed lag after the cut-off: the 1st–15th cut-off
+     * pays out on `first_half_pay_day` the same month, and the 16th–end
+     * cut-off on `second_half_pay_day` the following month — the 10th/25th
+     * pattern most employers run, whatever days this company actually uses.
      */
     public function generatePeriods(Request $request): JsonResponse
     {
         $data = $request->validate([
             'year' => 'required|integer|between:2000,2100',
-            // Days after the cut-off that wages are paid.
-            'payLagDays' => 'nullable|integer|between:0,15',
         ]);
 
         $year = (int) $data['year'];
-        $lag = (int) ($data['payLagDays'] ?? 5);
+        $firstPayDay = (int) $this->settings->get('payroll', 'first_half_pay_day', 25);
+        $secondPayDay = (int) $this->settings->get('payroll', 'second_half_pay_day', 10);
         $created = 0;
 
         for ($month = 1; $month <= 12; $month++) {
             $monthStart = CarbonImmutable::create($year, $month, 1);
+            $nextMonth = $monthStart->addMonth();
 
             foreach ([1, 2] as $half) {
                 $start = $half === 1 ? $monthStart : $monthStart->day(16);
@@ -67,6 +75,13 @@ class PayrollController extends Controller
                     continue;
                 }
 
+                // Clamped to the paying month's own length, so a 31st
+                // configured as the pay day still lands somewhere real in
+                // February.
+                $payDate = $half === 1
+                    ? $monthStart->day(min($firstPayDay, $monthStart->daysInMonth))
+                    : $nextMonth->day(min($secondPayDay, $nextMonth->daysInMonth));
+
                 PayrollPeriod::create([
                     'code' => $code,
                     'label' => $start->format('j').'–'.$end->format('j M Y'),
@@ -75,7 +90,7 @@ class PayrollController extends Controller
                     'half' => $half,
                     'period_start' => $start->toDateString(),
                     'period_end' => $end->toDateString(),
-                    'pay_date' => $end->addDays($lag)->toDateString(),
+                    'pay_date' => $payDate->toDateString(),
                     'status' => 'Open',
                 ]);
                 $created++;

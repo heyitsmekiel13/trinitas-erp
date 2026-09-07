@@ -220,6 +220,7 @@ function RegisterDialog({
           )}
           {lines.length > 0 && run?.status !== 'Draft' && (
             <Menu
+              placement="top"
               trigger={({ toggle }) => (
                 <Button variant="secondary" size="sm" onClick={toggle}>
                   <Landmark className="size-3.5" />

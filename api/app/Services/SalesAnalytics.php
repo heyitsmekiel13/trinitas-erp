@@ -10,6 +10,7 @@ use App\Models\SalesOrder;
 use App\Models\SalesOrderLine;
 use App\Models\SalesReturn;
 use App\Models\SalesTarget;
+use App\Services\Concerns\ResolvesDashboardWindow;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 
@@ -28,6 +29,8 @@ use Illuminate\Support\Collection;
  */
 class SalesAnalytics
 {
+    use ResolvesDashboardWindow;
+
     private const MONTHS = 12;
 
     /** Orders in these states have not sold anything yet, or never will. */
@@ -35,13 +38,22 @@ class SalesAnalytics
 
     private const OPEN_STAGES = ['Qualification', 'Needs Analysis', 'Proposal', 'Negotiation'];
 
-    public function dashboard(): array
-    {
+    public function dashboard(
+        string $period = 'last_12m',
+        ?string $from = null,
+        ?string $to = null,
+        ?string $grain = null,
+    ): array {
         $now = CarbonImmutable::now();
-        $windowStart = $now->startOfMonth()->subMonths(self::MONTHS - 1);
 
-        $orders = $this->orders($windowStart);
-        $trend = $this->trend($orders, $now);
+        [$start, $end, $grain, $label, $priorStart, $priorEnd] = $this->resolveWindow(
+            $period, $from, $to, $grain, $now,
+            fn (CarbonImmutable $now) => CarbonImmutable::parse(SalesOrder::min('order_date') ?? $now->subYear())->startOfDay(),
+        );
+
+        $orders = $this->orders($start, $end);
+        $priorOrders = $this->orders($priorStart, $priorEnd);
+        $trend = $this->trend($orders, $grain, $start, $end);
         $pipeline = $this->pipeline();
 
         return [
@@ -51,8 +63,21 @@ class SalesAnalytics
             'customers' => $this->groupTop($orders, 'customer', 8),
             'pipeline' => $pipeline,
             'targets' => $this->targets($now),
-            'kpis' => $this->kpis($orders, $trend, $pipeline, $now),
+            'kpis' => $this->kpis($orders, $priorOrders, $trend, $pipeline, $now),
             'generatedAt' => $now->toIso8601String(),
+            'window' => [
+                'period' => $period,
+                'grain' => $grain,
+                'from' => $start->toDateString(),
+                'to' => $end->toDateString(),
+                'label' => $label,
+                'days' => $start->diffInDays($end) + 1,
+                'compare' => [
+                    'from' => $priorStart->toDateString(),
+                    'to' => $priorEnd->toDateString(),
+                    'label' => $priorStart->format('j M Y').' – '.$priorEnd->format('j M Y'),
+                ],
+            ],
         ];
     }
 
@@ -61,11 +86,11 @@ class SalesAnalytics
      *
      * @return Collection<int, array{month:string,total:float,cost:float,channel:string,region:string,customer:string}>
      */
-    private function orders(CarbonImmutable $windowStart): Collection
+    private function orders(CarbonImmutable $start, CarbonImmutable $end): Collection
     {
         return SalesOrder::query()
             ->whereNotIn('sales_orders.status', self::DEAD_ORDER_STATES)
-            ->where('sales_orders.order_date', '>=', $windowStart->toDateString())
+            ->whereBetween('sales_orders.order_date', [$start->toDateString(), $end->toDateString()])
             ->join('customers', 'customers.id', '=', 'sales_orders.customer_id')
             ->get([
                 'sales_orders.order_date',
@@ -77,6 +102,7 @@ class SalesAnalytics
             ])
             ->map(fn ($row) => [
                 'month' => CarbonImmutable::parse($row->order_date)->format('Y-m'),
+                'bucket' => $row->order_date,
                 'total' => (float) $row->total,
                 'cost' => (float) $row->cost_total,
                 'channel' => (string) $row->channel,
@@ -86,36 +112,41 @@ class SalesAnalytics
     }
 
     /**
-     * Revenue, cost and gross profit by month, against the quota set for the
-     * period. The target is what the business committed to, never a multiple of
-     * what it actually did — a target derived from actuals is always met.
+     * Revenue, cost and gross profit bucketed at the resolved grain, against the
+     * quota set for each calendar month the window covers. The target is what
+     * the business committed to, never a multiple of what it actually did — a
+     * target derived from actuals is always met.
      */
-    private function trend(Collection $orders, CarbonImmutable $now): array
+    private function trend(Collection $orders, string $grain, CarbonImmutable $start, CarbonImmutable $end): array
     {
-        $byMonth = $orders->groupBy('month');
-        $targets = $this->monthlyTargets($now);
+        $byBucket = $orders->groupBy(fn ($row) => $this->windowBucketKey($grain, CarbonImmutable::parse($row['bucket'])));
+        $targets = $this->monthlyTargets($start, $end);
 
-        $months = [];
-        for ($i = self::MONTHS - 1; $i >= 0; $i--) {
-            $month = $now->startOfMonth()->subMonths($i);
-            $key = $month->format('Y-m');
-            $rows = $byMonth->get($key, collect());
+        $rows = [];
+        $cursor = $this->windowFloorTo($grain, $start);
+        $guard = 0;
 
-            $revenue = round($rows->sum('total'), 2);
-            $cost = round($rows->sum('cost'), 2);
+        while ($cursor->lte($end) && $guard++ < 4000) {
+            $key = $this->windowBucketKey($grain, $cursor);
+            $bucketRows = $byBucket->get($key, collect());
 
-            $months[] = [
+            $revenue = round($bucketRows->sum('total'), 2);
+            $cost = round($bucketRows->sum('cost'), 2);
+
+            $rows[] = [
                 'key' => $key,
-                'month' => $month->format('M'),
+                'month' => $this->windowBucketLabel($grain, $cursor),
                 'revenue' => $revenue,
                 'cost' => $cost,
                 'grossProfit' => round($revenue - $cost, 2),
-                'target' => $targets[$key] ?? 0.0,
-                'orders' => $rows->count(),
+                'target' => $grain === 'month' ? ($targets[$key] ?? 0.0) : 0.0,
+                'orders' => $bucketRows->count(),
             ];
+
+            $cursor = $this->windowStep($cursor, $grain);
         }
 
-        return $months;
+        return $rows;
     }
 
     /**
@@ -126,9 +157,9 @@ class SalesAnalytics
      * only over months the monthly rows did not already claim, so the two ways
      * of setting a quota never double-count.
      */
-    private function monthlyTargets(CarbonImmutable $now): array
+    private function monthlyTargets(CarbonImmutable $start, CarbonImmutable $end): array
     {
-        $years = [$now->year, $now->startOfMonth()->subMonths(self::MONTHS - 1)->year];
+        $years = [$start->year, $end->year];
 
         $rows = SalesTarget::query()
             ->whereIn('year', array_unique($years))
@@ -233,29 +264,30 @@ class SalesAnalytics
     }
 
     /**
-     * The headline tiles.
+     * The headline tiles, over the selected window against the equivalent
+     * window immediately before it.
      *
      * `onTimeDelivery` is null rather than zero when nothing has been delivered
      * with both a promised and an actual date — an empty system has no record,
      * and showing 0% would read as a failure that never happened.
      */
-    private function kpis(Collection $orders, array $trend, array $pipeline, CarbonImmutable $now): array
+    private function kpis(Collection $orders, Collection $priorOrders, array $trend, array $pipeline, CarbonImmutable $now): array
     {
-        $thisMonth = $trend[count($trend) - 1];
-        $lastMonth = $trend[count($trend) - 2] ?? ['revenue' => 0.0];
-
         $won = Lead::where('stage', 'Closed Won')->count();
         $lost = Lead::where('stage', 'Closed Lost')->count();
 
         $revenue = $orders->sum('total');
+        $cost = $orders->sum('cost');
+        $grossProfit = $revenue - $cost;
+        $priorRevenue = $priorOrders->sum('total');
 
         return [
-            'revenueMtd' => $thisMonth['revenue'],
-            'revenueChange' => $lastMonth['revenue'] > 0
-                ? round((($thisMonth['revenue'] - $lastMonth['revenue']) / $lastMonth['revenue']) * 100, 1)
+            'revenueMtd' => round($revenue, 2),
+            'revenueChange' => $priorRevenue > 0
+                ? round((($revenue - $priorRevenue) / $priorRevenue) * 100, 1)
                 : 0.0,
-            'grossMargin' => $thisMonth['revenue'] > 0
-                ? round(($thisMonth['grossProfit'] / $thisMonth['revenue']) * 100, 1)
+            'grossMargin' => $revenue > 0
+                ? round(($grossProfit / $revenue) * 100, 1)
                 : 0.0,
             'openPipeline' => round(array_sum(array_column($pipeline, 'value')), 2),
             'openOpportunities' => array_sum(array_column($pipeline, 'count')),
@@ -264,7 +296,7 @@ class SalesAnalytics
             'avgOrderValue' => $orders->count() > 0 ? round($revenue / $orders->count(), 2) : 0.0,
             'activeCustomers' => Customer::where('status', 'Active')->count(),
             'openQuotes' => Quotation::whereIn('status', ['Draft', 'Submitted', 'Approved'])->count(),
-            'ordersThisMonth' => $thisMonth['orders'],
+            'ordersThisMonth' => $orders->count(),
             'onTimeDelivery' => $this->onTimeDelivery(),
             'periodRevenue' => round($revenue, 2),
         ];

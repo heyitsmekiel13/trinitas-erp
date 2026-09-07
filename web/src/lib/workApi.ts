@@ -1,6 +1,6 @@
 import { API_BASE_URL } from './api'
 import { useAuth } from '@/app/auth'
-import { ApiError } from './adminApi'
+import { ApiError, dashboardWindowQuery, type DashboardGrain, type DashboardPeriod, type DashboardWindow } from './adminApi'
 
 /**
  * Typed client for Process & Performance.
@@ -416,6 +416,7 @@ export type ComplianceDashboard = {
   worstOffenders: { name: string; value: number }[]
   coverage: Coverage
   onTimeTrend: { name: string; onTime: number; late: number; value: number | null }[]
+  window: DashboardWindow
 }
 
 export type EvaluationQueueRow = {
@@ -472,7 +473,10 @@ export type ScoreRow = {
   averageDaysLate: number | null
 }
 
-export const getComplianceDashboard = () => get<ComplianceDashboard>('process/compliance/dashboard')
+export const getComplianceDashboard = (
+  period: DashboardPeriod = 'mtd',
+  opts: { from?: string; to?: string; grain?: DashboardGrain } = {},
+) => get<ComplianceDashboard>(`process/compliance/dashboard?${dashboardWindowQuery(period, opts)}`)
 
 export const getComplianceFlags = (params: { kind?: string; severity?: string; includeResolved?: boolean } = {}) => {
   const query = new URLSearchParams()

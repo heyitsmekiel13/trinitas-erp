@@ -159,27 +159,19 @@ export function Login() {
    * The moment credentials are accepted, to the moment the app shell is on
    * screen.
    *
-   * Three things happen at once: every department's code starts warming
-   * (`departmentChunks.ts`), and each department's landing-page *data* is
-   * prefetched into the same React Query cache `useResource` reads from
-   * (`app/warmup.ts`) — so a click into Sales or Warehouse right after this
-   * finds its dashboard already there instead of fetching cold. The wait
-   * itself is capped rather than open-ended: `Promise.race` against a ceiling
-   * means a slow connection still hands off in bounded time, it just does so
-   * with a warmer cache than a fast one manages by the same deadline. A
-   * short floor underneath that keeps the handoff from ever reading as a
-   * flicker on a very fast network, where the race would otherwise resolve
-   * in a handful of milliseconds.
+   * Navigation happens immediately — the credential check itself is the only
+   * network round trip worth waiting for. Every department's code starts
+   * warming (`departmentChunks.ts`) and each department's landing-page data
+   * is prefetched into the same React Query cache `useResource` reads from
+   * (`app/warmup.ts`), but neither blocks the handoff: they run in the
+   * background, and whatever a click into Sales or Warehouse finds already
+   * warm is a bonus, not something worth making every sign-in wait on. The
+   * destination route's own skeleton covers whatever is still loading.
    */
-  const handOff = async () => {
+  const handOff = () => {
     setTransitioning(true)
     prefetchAllDepartmentsWhenIdle()
-
-    const floor = new Promise((resolve) => window.setTimeout(resolve, 500))
-    const ceiling = new Promise((resolve) => window.setTimeout(resolve, 1800))
-
-    await Promise.all([floor, Promise.race([prefetchDashboards(), ceiling])])
-
+    void prefetchDashboards()
     navigate(redirectTo, { replace: true })
   }
 
@@ -195,7 +187,7 @@ export function Login() {
     try {
       const result = await login(username, password)
       if (result.status === 'ok') {
-        await handOff()
+        handOff()
         return
       } else if (result.status === 'code-required') {
         setChallengeId(result.challengeId)
@@ -216,7 +208,7 @@ export function Login() {
     try {
       const result = await verifyCode(challengeId, code)
       if (result.status === 'ok') {
-        await handOff()
+        handOff()
         return
       } else if (result.status === 'error') setError(result.message)
     } catch (e) {

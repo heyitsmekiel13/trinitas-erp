@@ -897,6 +897,43 @@ function PayrollPanel() {
         </div>
       </Card>
 
+      <Card>
+        <CardHeader
+          title="Pay schedule"
+          subtitle="The calendar days cut-offs actually pay out on. Generate Cut-offs uses these instead of guessing a date from the cut-off end."
+        />
+        <div className="grid gap-4 px-5 pb-5 sm:grid-cols-2">
+          <Field
+            label="1st–15th cut-off pays on"
+            hint="Day of the same month, e.g. 25."
+            required
+            error={form.fieldError('first_half_pay_day')}
+          >
+            <Input
+              type="number"
+              min={1}
+              max={31}
+              value={v.first_half_pay_day}
+              onChange={(e) => form.set('first_half_pay_day', Number(e.target.value))}
+            />
+          </Field>
+          <Field
+            label="16th–end cut-off pays on"
+            hint="Day of the following month, e.g. 10."
+            required
+            error={form.fieldError('second_half_pay_day')}
+          >
+            <Input
+              type="number"
+              min={1}
+              max={31}
+              value={v.second_half_pay_day}
+              onChange={(e) => form.set('second_half_pay_day', Number(e.target.value))}
+            />
+          </Field>
+        </div>
+      </Card>
+
       <SaveBar saving={form.saving} error={form.error} />
     </form>
   )

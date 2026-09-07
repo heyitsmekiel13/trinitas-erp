@@ -5,9 +5,13 @@ namespace App\Services;
 use App\Models\Applicant;
 use App\Models\Employee;
 use App\Models\EmployeeDeduction;
+use App\Models\LeaveRequest;
 use App\Models\PayrollGroup;
 use App\Models\PayrollPeriod;
 use App\Models\PayrollRun;
+use App\Models\PurchaseOrder;
+use App\Models\PurchaseRequisition;
+use App\Models\SalesOrder;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -36,17 +40,36 @@ use Illuminate\Database\Eloquent\Model;
  */
 class ResourceGuards
 {
+    /** Why this record may not be created. Null when it may. */
+    public function forCreate(string $resource, array $input): ?string
+    {
+        return match ($resource) {
+            'hr/leaves' => $this->leaveCreate($input),
+            'procurement/requisitions' => $this->purchaseRequisitionCreate($input),
+            'procurement/orders' => $this->purchaseOrderCreate($input),
+            'sales/orders' => $this->salesOrderCreate($input),
+            default => null,
+        };
+    }
+
     /**
      * Why this record may not be changed. Null when it may.
      *
      * Called before validation, so a refusal costs nothing and the message is
-     * never buried under a list of field errors.
+     * never buried under a list of field errors. `$input` is the raw request
+     * body — most resources here never look at it, but one whose "approve"
+     * is just this same update setting `status` to Approved needs to see
+     * what is actually changing, not only the record as it stood before.
      */
-    public function forUpdate(string $resource, Model $record): ?string
+    public function forUpdate(string $resource, Model $record, array $input = []): ?string
     {
         return match ($resource) {
             'hr/payroll-runs' => $this->payrollRunUpdate($record),
             'hr/payroll-periods' => $this->payrollPeriodUpdate($record),
+            'hr/leaves' => $this->leaveUpdate($record),
+            'procurement/requisitions' => $this->purchaseRequisitionUpdate($record, $input),
+            'procurement/orders' => $this->purchaseOrderUpdate($record, $input),
+            'sales/orders' => $this->salesOrderUpdate($record),
             default => null,
         };
     }
@@ -60,6 +83,10 @@ class ResourceGuards
             'hr/payroll-groups' => $this->payrollGroupDelete($record),
             'hr/requisitions' => $this->requisitionDelete($record),
             'hr/job-postings' => $this->postingDelete($record),
+            'hr/leaves' => $this->leaveDelete($record),
+            'procurement/requisitions' => $this->purchaseRequisitionDelete($record),
+            'procurement/orders' => $this->purchaseOrderDelete($record),
+            'sales/orders' => $this->salesOrderDelete($record),
             default => null,
         };
     }
@@ -209,6 +236,318 @@ class ResourceGuards
                 .($runs === 1 ? '' : 's')
                 .' in its history. Deleting it would leave those runs without a group name.'
             : null;
+    }
+
+    /* ---------------------------------------------------------------- leave */
+
+    /**
+     * The role-based access rules' first template — see the phased plan:
+     * rank-and-file may file and correct their own request only up to the
+     * moment it is actually submitted, their own supervisor or HR can act on
+     * it from there, and an approved request is a decision on the record
+     * rather than a draft to keep editing.
+     */
+    private function leaveCreate(array $input): ?string
+    {
+        $user = auth()->user();
+        if (! $user || $user->hasPermission('hr.create')) {
+            return null;
+        }
+
+        $requestedId = $input['employeeId'] ?? null;
+
+        if ($user->employee_id && (int) $requestedId === (int) $user->employee_id) {
+            return null;
+        }
+
+        return 'You can only file a leave request for yourself. Ask HR to file one on someone else\'s behalf.';
+    }
+
+    private function leaveUpdate(Model $record): ?string
+    {
+        /** @var LeaveRequest $record */
+        $user = auth()->user();
+        if (! $user) {
+            return 'Sign in again to make this change.';
+        }
+
+        // Your own request is a self-service question, not a functional-role
+        // one: an HR Officer's own `hr.edit` exists so they can process other
+        // people's records, not so it lets them skip the same lock everyone
+        // else's own request is held to. Only "is it still a draft" governs
+        // your own record — the checks below are for everyone else's.
+        if ($record->employee_id === $user->employee_id) {
+            return $record->status === 'Draft'
+                ? null
+                : "This request has already been submitted ({$record->status}) and can only be corrected by your supervisor or HR.";
+        }
+
+        if ($user->canActOnRecordOf($record->employee, 'hr.edit')) {
+            return null;
+        }
+
+        return 'You may only edit your own leave requests, or ones your position lets you act on.';
+    }
+
+    private function leaveDelete(Model $record): ?string
+    {
+        /** @var LeaveRequest $record */
+        $user = auth()->user();
+        if (! $user) {
+            return 'Sign in again to make this change.';
+        }
+
+        // Same self-service reasoning as `leaveUpdate`: your own request is
+        // governed by whether it is still a draft, never by a functional
+        // role that exists to let you process other people's records.
+        if ($record->employee_id === $user->employee_id) {
+            return $record->status === 'Draft'
+                ? null
+                : "This request has already been submitted ({$record->status}) — withdraw it through a decision instead of deleting it.";
+        }
+
+        if ($record->status !== 'Approved' && $user->canActOnRecordOf($record->employee, 'hr.edit')) {
+            return null;
+        }
+
+        return $record->status === 'Approved'
+            ? 'An approved leave request is part of the record and cannot be deleted — cancel it instead.'
+            : 'Only your own draft, or your supervisor or HR, can remove this request.';
+    }
+
+    /* ------------------------------------------------------- procurement */
+
+    /**
+     * The role-based access rules' second template, same shape as leave
+     * requests: raise and correct your own while it is still a draft, your
+     * own supervisor or Procurement from there. Approving one here is not a
+     * separate action — `status` reaching Approved or Rejected through this
+     * same generic update is the decision, so that is the one transition
+     * this watches for specifically, on top of the ordinary edit rule.
+     */
+    private function purchaseRequisitionCreate(array $input): ?string
+    {
+        $user = auth()->user();
+        if (! $user || $user->hasPermission('procurement.create')) {
+            return null;
+        }
+
+        $requestedId = $input['requestedById'] ?? null;
+
+        if ($user->employee_id && (int) $requestedId === (int) $user->employee_id) {
+            return null;
+        }
+
+        return 'You can only raise a requisition for your own work. Ask Procurement to raise one on someone else\'s behalf.';
+    }
+
+    private function purchaseRequisitionUpdate(Model $record, array $input): ?string
+    {
+        /** @var PurchaseRequisition $record */
+        $user = auth()->user();
+        if (! $user) {
+            return 'Sign in again to make this change.';
+        }
+
+        // A decision — Approved or Rejected — needs approval authority
+        // specifically, whatever else about this same update would
+        // otherwise be allowed.
+        $decidingTo = $input['status'] ?? null;
+        if (in_array($decidingTo, ['Approved', 'Rejected'], true) && $decidingTo !== $record->status) {
+            return $user->canActOnRecordOf($record->requester, 'procurement.approve')
+                ? null
+                : 'You are not authorized to decide this requisition.';
+        }
+
+        // Your own requisition is a self-service question while it is still
+        // a draft — same reasoning as a leave request's own draft lock, and
+        // not something a functional role should be able to skip on their
+        // own paperwork.
+        if ($record->requested_by === $user->employee_id) {
+            return $record->status === 'Draft'
+                ? null
+                : "This requisition has already been submitted ({$record->status}) and can only be corrected by your supervisor or Procurement.";
+        }
+
+        if ($user->canActOnRecordOf($record->requester, 'procurement.edit')) {
+            return null;
+        }
+
+        return 'You may only edit your own requisitions, or ones your position lets you act on.';
+    }
+
+    private function purchaseRequisitionDelete(Model $record): ?string
+    {
+        /** @var PurchaseRequisition $record */
+        $user = auth()->user();
+        if (! $user) {
+            return 'Sign in again to make this change.';
+        }
+
+        if ($record->requested_by === $user->employee_id) {
+            return $record->status === 'Draft'
+                ? null
+                : "This requisition has already been submitted ({$record->status}) — reject it through a decision instead of deleting it.";
+        }
+
+        if ($record->status !== 'Approved' && $user->canActOnRecordOf($record->requester, 'procurement.edit')) {
+            return null;
+        }
+
+        return $record->status === 'Approved'
+            ? 'An approved requisition is part of the record and cannot be deleted — reject or convert it instead.'
+            : 'Only your own draft, or your supervisor or Procurement, can remove this requisition.';
+    }
+
+    /**
+     * A purchase order is the same shape as a requisition — approving it
+     * is this same update reaching Approved, so that transition specifically
+     * needs approval authority regardless of who raised it.
+     */
+    private function purchaseOrderCreate(array $input): ?string
+    {
+        $user = auth()->user();
+        if (! $user || $user->hasPermission('procurement.create')) {
+            return null;
+        }
+
+        $requestedId = $input['buyerId'] ?? null;
+
+        if ($user->employee_id && (int) $requestedId === (int) $user->employee_id) {
+            return null;
+        }
+
+        return 'You can only raise a purchase order under your own name. Ask Procurement to raise one on someone else\'s behalf.';
+    }
+
+    private function purchaseOrderUpdate(Model $record, array $input): ?string
+    {
+        /** @var PurchaseOrder $record */
+        $user = auth()->user();
+        if (! $user) {
+            return 'Sign in again to make this change.';
+        }
+
+        $decidingTo = $input['status'] ?? null;
+        if (in_array($decidingTo, ['Approved', 'Cancelled'], true) && $decidingTo !== $record->status) {
+            return $user->canActOnRecordOf($record->buyer, 'procurement.approve')
+                ? null
+                : 'You are not authorized to decide this purchase order.';
+        }
+
+        if ($record->buyer_id === $user->employee_id) {
+            return $record->status === 'Draft'
+                ? null
+                : "This order has already been submitted ({$record->status}) and can only be corrected by your supervisor or Procurement.";
+        }
+
+        if ($user->canActOnRecordOf($record->buyer, 'procurement.edit')) {
+            return null;
+        }
+
+        return 'You may only edit your own purchase orders, or ones your position lets you act on.';
+    }
+
+    private function purchaseOrderDelete(Model $record): ?string
+    {
+        /** @var PurchaseOrder $record */
+        $user = auth()->user();
+        if (! $user) {
+            return 'Sign in again to make this change.';
+        }
+
+        if (in_array($record->status, ['Partial', 'Completed'], true)) {
+            return "{$record->po_no} has already been {$record->status} — cancel it instead of deleting a live commitment.";
+        }
+
+        if ($record->buyer_id === $user->employee_id) {
+            return $record->status === 'Draft'
+                ? null
+                : "This order has already been submitted ({$record->status}) — cancel it through a decision instead of deleting it.";
+        }
+
+        if ($record->status !== 'Approved' && $user->canActOnRecordOf($record->buyer, 'procurement.edit')) {
+            return null;
+        }
+
+        return $record->status === 'Approved'
+            ? 'An approved purchase order is a commitment to a supplier and cannot be deleted — cancel it instead.'
+            : 'Only your own draft, or your supervisor or Procurement, can remove this order.';
+    }
+
+    /* ------------------------------------------------------------- sales */
+
+    /**
+     * A third template of the same shape — sales orders have no separate
+     * approval step of their own (confirming one is the rep's own act, not
+     * a decision somebody else makes), so this is the plainer half of the
+     * pattern: your own while it is a draft, your sales manager or
+     * supervisor from the moment it is confirmed and a customer is
+     * expecting it.
+     */
+    private function salesOrderCreate(array $input): ?string
+    {
+        $user = auth()->user();
+        if (! $user || $user->hasPermission('sales.create')) {
+            return null;
+        }
+
+        $requestedId = $input['salesRepId'] ?? null;
+
+        if ($user->employee_id && (int) $requestedId === (int) $user->employee_id) {
+            return null;
+        }
+
+        return 'You can only raise an order under your own name. Ask your sales manager to raise one for someone else.';
+    }
+
+    private function salesOrderUpdate(Model $record): ?string
+    {
+        /** @var SalesOrder $record */
+        $user = auth()->user();
+        if (! $user) {
+            return 'Sign in again to make this change.';
+        }
+
+        if ($record->sales_rep_id === $user->employee_id) {
+            return $record->status === 'Draft'
+                ? null
+                : "This order has already been confirmed ({$record->status}) and can only be changed by your sales manager.";
+        }
+
+        if ($user->canActOnRecordOf($record->salesRep, 'sales.edit')) {
+            return null;
+        }
+
+        return 'You may only edit your own orders, or ones your position lets you act on.';
+    }
+
+    private function salesOrderDelete(Model $record): ?string
+    {
+        /** @var SalesOrder $record */
+        $user = auth()->user();
+        if (! $user) {
+            return 'Sign in again to make this change.';
+        }
+
+        // Fulfilment already under way is a data-integrity line, not a
+        // rank one — nobody deletes an order the warehouse has picked
+        // against.
+        if (in_array($record->status, ['Partial', 'Delivered'], true)) {
+            return "{$record->order_no} is already {$record->status} — cancel it instead of deleting a live fulfilment.";
+        }
+
+        if ($record->sales_rep_id === $user->employee_id) {
+            return $record->status === 'Draft'
+                ? null
+                : "This order has already been confirmed ({$record->status}) — cancel it instead of deleting it.";
+        }
+
+        if ($user->canActOnRecordOf($record->salesRep, 'sales.edit')) {
+            return null;
+        }
+
+        return 'Only your own draft, or your sales manager, can remove this order.';
     }
 
     /* --------------------------------------------------------------- misc */

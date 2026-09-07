@@ -690,12 +690,14 @@ export type RemittanceSummary = {
   agencies: { agency: string; employee: number; employer: number; total: number; reference: string }[]
 }
 
-/** Creates the 24 semi-monthly cut-offs for a year. Safe to re-run. */
-export const generatePayrollPeriods = (year: number, payLagDays?: number) =>
-  post<{ created: number; year: number }>('hr/payroll-periods/generate', {
-    year,
-    ...(payLagDays != null ? { payLagDays } : {}),
-  })
+/**
+ * Creates the 24 semi-monthly cut-offs for a year. Safe to re-run.
+ *
+ * Pay dates follow the company's own pay schedule (Admin → System Settings →
+ * Payroll), not a value passed here.
+ */
+export const generatePayrollPeriods = (year: number) =>
+  post<{ created: number; year: number }>('hr/payroll-periods/generate', { year })
 
 export type PayrollRegister = {
   run: PayrollRunSummary
@@ -2147,6 +2149,37 @@ export const getHrDashboard = (
   )
 
 /* -------------------------------------------------------------------------- */
+/* Dashboard windows — the same named-period + bucket resolution HR uses,     */
+/* offered generically so every other module's dashboard can ask for it too. */
+/* -------------------------------------------------------------------------- */
+
+export type DashboardPeriod = HrPeriod
+export type DashboardGrain = HrGrain
+
+export type DashboardWindow = {
+  period: DashboardPeriod
+  grain: DashboardGrain
+  from: string
+  to: string
+  label: string
+  days: number
+  compare: { from: string; to: string; label: string }
+}
+
+/** The query string a dashboard endpoint's `period`/`from`/`to`/`grain` params share. */
+export function dashboardWindowQuery(
+  period: DashboardPeriod,
+  opts: { from?: string; to?: string; grain?: DashboardGrain } = {},
+): string {
+  return new URLSearchParams({
+    period,
+    ...(opts.from ? { from: opts.from } : {}),
+    ...(opts.to ? { to: opts.to } : {}),
+    ...(opts.grain ? { grain: opts.grain } : {}),
+  }).toString()
+}
+
+/* -------------------------------------------------------------------------- */
 /* Daily time record                                                           */
 /* -------------------------------------------------------------------------- */
 
@@ -2961,6 +2994,10 @@ export type PayrollSettings = {
   statutory_schedule: 'first' | 'second' | 'split'
   working_days_factor: number
   hours_per_day: number
+  /** Calendar day the 1st–15th cut-off pays out, same month. */
+  first_half_pay_day: number
+  /** Calendar day the 16th–end cut-off pays out, the following month. */
+  second_half_pay_day: number
 }
 
 export const getCompanySettings = () => get<CompanySettings>('settings/company')

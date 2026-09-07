@@ -1,14 +1,153 @@
 import * as React from 'react'
 import { Banknote, Fuel, Gauge, Repeat, ShieldCheck, Smile, Target, Timer, TrendingDown, Users, Wrench } from 'lucide-react'
-import { money, moneyCompact, num, percent } from '@/lib/format'
+import { fmtDate, money, moneyCompact, num, percent } from '@/lib/format'
 import { BarSeriesChart, ChartCard, DonutChart, RankedBars } from '@/components/charts'
 import { StatGrid, StatTile } from '@/components/dashboard/StatTile'
-import { DashboardShell, type Period, type ReportOption } from '@/components/dashboard/DashboardShell'
+import { DashboardShell, type FullPeriod, type Grain, type ReportOption } from '@/components/dashboard/DashboardShell'
 import { ErrorState, SkeletonDashboard } from '@/components/ui/feedback'
 import { Badge, Card, CardHeader, ProgressBar } from '@/components/ui/primitives'
-import { PRIORITIES } from '@/data/afterSales'
+import { PRIORITIES, effectiveJobDate, summarise, responseTimes, type ServiceJob } from '@/data/afterSales'
 import { useAfterSales } from './useAfterSales'
 import { useSixSigma } from './leanSixSigma'
+
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/**
+ * The same named-period + bucket resolution the other departments' dashboards
+ * ask the server for — computed here in the browser instead, since this
+ * module reads an imported historical file rather than a live endpoint.
+ */
+function resolveClientWindow(period: FullPeriod, from: string, to: string, grainOverride: Grain | null) {
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const startOfWeek = (d: Date) => {
+    const x = new Date(d)
+    x.setDate(x.getDate() - x.getDay())
+    return x
+  }
+  const startOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth(), 1)
+  const endOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth() + 1, 0)
+  const startOfQuarter = (d: Date) => new Date(d.getFullYear(), Math.floor(d.getMonth() / 3) * 3, 1)
+  const startOfYear = (d: Date) => new Date(d.getFullYear(), 0, 1)
+
+  let start: Date
+  let end: Date
+  switch (period) {
+    case 'today':
+      start = today
+      end = today
+      break
+    case 'wtd':
+      start = startOfWeek(today)
+      end = today
+      break
+    case 'mtd':
+      start = startOfMonth(today)
+      end = today
+      break
+    case 'last_month': {
+      const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1)
+      start = lastMonth
+      end = endOfMonth(lastMonth)
+      break
+    }
+    case 'qtd':
+      start = startOfQuarter(today)
+      end = today
+      break
+    case 'ytd':
+      start = startOfYear(today)
+      end = today
+      break
+    case 'last_12m':
+      start = new Date(today.getFullYear(), today.getMonth() - 11, 1)
+      end = today
+      break
+    case 'all':
+      start = new Date(today.getFullYear() - 10, 0, 1)
+      end = today
+      break
+    default:
+      start = from ? new Date(from) : new Date(today.getFullYear(), today.getMonth() - 11, 1)
+      end = to ? new Date(to) : today
+  }
+
+  const days = Math.round((end.getTime() - start.getTime()) / 86_400_000)
+  const grain: Grain = grainOverride ?? (days <= 62 ? 'day' : days <= 1100 ? 'month' : 'year')
+
+  const label = (() => {
+    switch (period) {
+      case 'today':
+        return `Today, ${fmtDate(start)}`
+      case 'wtd':
+        return 'Week to date'
+      case 'mtd':
+        return `${start.toLocaleString('en-US', { month: 'long' })} ${start.getFullYear()} to date`
+      case 'last_month':
+        return `${start.toLocaleString('en-US', { month: 'long' })} ${start.getFullYear()}`
+      case 'qtd':
+        return `Q${Math.floor(start.getMonth() / 3) + 1} ${start.getFullYear()} to date`
+      case 'ytd':
+        return `${start.getFullYear()} to date`
+      case 'last_12m':
+        return 'Last 12 months'
+      case 'all':
+        return `All time (from ${start.toLocaleString('en-US', { month: 'short' })} ${start.getFullYear()})`
+      default:
+        return `${fmtDate(start)} – ${fmtDate(end)}`
+    }
+  })()
+
+  return { start, end, grain, label }
+}
+
+type BucketRow = { key: string; month: string; revenue: number; costs: number; jobs: number }
+
+/** Revenue and cost bucketed at the resolved grain — the day/year views the shared monthly `summarise()` cannot produce. */
+function bucketJobs(jobs: ServiceJob[], grain: Grain, start: Date, end: Date): BucketRow[] {
+  const keyOf = (d: Date) =>
+    grain === 'day'
+      ? d.toISOString().slice(0, 10)
+      : grain === 'year'
+        ? String(d.getFullYear())
+        : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+
+  const labelOf = (d: Date) =>
+    grain === 'day'
+      ? `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`
+      : grain === 'year'
+        ? String(d.getFullYear())
+        : `${MONTHS_SHORT[d.getMonth()]} ${d.getFullYear()}`
+
+  const buckets = new Map<string, { revenue: number; costs: number; jobs: number }>()
+  for (const job of jobs) {
+    const iso = effectiveJobDate(job)
+    if (!iso) continue
+    const bucket = buckets.get(keyOf(new Date(iso))) ?? { revenue: 0, costs: 0, jobs: 0 }
+    bucket.revenue += job.revenueTotal
+    bucket.costs += job.costTotal
+    bucket.jobs += 1
+    buckets.set(keyOf(new Date(iso)), bucket)
+  }
+
+  const rows: BucketRow[] = []
+  const cursor = new Date(start)
+  if (grain !== 'day') cursor.setDate(1)
+  if (grain === 'year') cursor.setMonth(0)
+  let guard = 0
+
+  while (cursor <= end && guard++ < 4000) {
+    const key = keyOf(cursor)
+    const bucket = buckets.get(key) ?? { revenue: 0, costs: 0, jobs: 0 }
+    rows.push({ key, month: labelOf(cursor), ...bucket })
+
+    if (grain === 'day') cursor.setDate(cursor.getDate() + 1)
+    else if (grain === 'year') cursor.setFullYear(cursor.getFullYear() + 1)
+    else cursor.setMonth(cursor.getMonth() + 1)
+  }
+
+  return rows
+}
 
 /**
  * The After-Sales dashboard.
@@ -20,9 +159,46 @@ import { useSixSigma } from './leanSixSigma'
  * totals.
  */
 export function Dashboard() {
-  const [period, setPeriod] = React.useState<Period>('12m')
-  const { isLoading, error, refetch, summary, response, requests } = useAfterSales()
+  const [period, setPeriod] = React.useState<FullPeriod>('last_12m')
+  const [from, setFrom] = React.useState('')
+  const [to, setTo] = React.useState('')
+  const [grain, setGrain] = React.useState<Grain | null>(null)
+
+  const { isLoading, error, refetch, jobs, requests: allRequests } = useAfterSales()
   const quality = useSixSigma()
+
+  const win = resolveClientWindow(period, from, to, grain)
+
+  // Revenue, cost and technician load are scoped to the window; open tickets
+  // stay a snapshot of right now, and the Six Sigma quality figures are their
+  // own separate, unwindowed measurement.
+  const jobsInWindow = React.useMemo(
+    () =>
+      jobs.filter((j) => {
+        const iso = effectiveJobDate(j)
+        if (!iso) return false
+        const d = new Date(iso)
+        return d >= win.start && d <= win.end
+      }),
+    [jobs, win.start.getTime(), win.end.getTime()],
+  )
+  const requestsInWindow = React.useMemo(
+    () =>
+      allRequests.filter((r) => {
+        if (!r.requestedAt) return false
+        const d = new Date(r.requestedAt)
+        return d >= win.start && d <= win.end
+      }),
+    [allRequests, win.start.getTime(), win.end.getTime()],
+  )
+
+  const summary = React.useMemo(() => summarise(jobsInWindow), [jobsInWindow])
+  const response = React.useMemo(() => responseTimes(requestsInWindow, jobsInWindow), [requestsInWindow, jobsInWindow])
+  const trend = React.useMemo(
+    () => bucketJobs(jobsInWindow, win.grain, win.start, win.end),
+    [jobsInWindow, win.grain, win.start.getTime(), win.end.getTime()],
+  )
+  const requests = allRequests
 
   const ctq = (id: string) => quality.ctqs.find((c) => c.id === id) ?? null
   const sla = ctq('sla')
@@ -90,7 +266,7 @@ export function Dashboard() {
           kind: 'table',
           title: 'Monthly Revenue and Cost',
           columns: ['Month', 'Jobs', 'Revenue', 'Costs', 'Net'],
-          rows: summary.byMonth.map((m) => [
+          rows: trend.map((m) => [
             m.month,
             num(m.jobs),
             money(m.revenue, { decimals: false }),
@@ -120,13 +296,23 @@ export function Dashboard() {
     <DashboardShell
       title="After-Sales"
       description="Service revenue, the cost of getting there, and where the technicians' time goes — from the repair requests, service reports and revenue workbook combined."
-      period={period}
-      onPeriodChange={setPeriod}
+      advanced={{
+        period,
+        onPeriod: setPeriod,
+        from,
+        to,
+        onFrom: setFrom,
+        onTo: setTo,
+        grain,
+        onGrain: setGrain,
+        resolvedGrain: win.grain,
+        windowLabel: win.label,
+      }}
       reportTitle="After-Sales Service Report"
       reportOptions={reportOptions}
       excelExport={{
         name: 'after-sales-monthly',
-        rows: summary.byMonth,
+        rows: trend,
         columns: [
           { header: 'Month', value: (r) => r.month },
           { header: 'Jobs', value: (r) => r.jobs },
@@ -269,7 +455,7 @@ export function Dashboard() {
               { key: 'revenue', label: 'Revenue', align: 'right', format: (v) => money(Number(v), { decimals: false }) },
               { key: 'costs', label: 'Costs', align: 'right', format: (v) => money(Number(v), { decimals: false }) },
             ],
-            rows: summary.byMonth,
+            rows: trend,
           }}
           footer={
             <span>
@@ -279,7 +465,7 @@ export function Dashboard() {
           }
         >
           <BarSeriesChart
-            data={summary.byMonth}
+            data={trend}
             xKey="month"
             format="money"
             series={[

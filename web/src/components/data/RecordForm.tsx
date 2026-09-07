@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { ChevronDown, ChevronUp, X } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { API_BASE_URL } from '@/lib/api'
 import { ApiError, createRecord, updateRecord } from '@/lib/adminApi'
@@ -76,7 +77,19 @@ export type FormField = {
    * address block and resolves its coordinates. It owns several value keys
    * rather than the single one named by `name`.
    */
-  type?: 'text' | 'number' | 'money' | 'date' | 'select' | 'textarea' | 'switch' | 'email' | 'tel' | 'percent' | 'address'
+  type?:
+    | 'text'
+    | 'number'
+    | 'money'
+    | 'date'
+    | 'select'
+    | 'textarea'
+    | 'switch'
+    | 'email'
+    | 'tel'
+    | 'percent'
+    | 'address'
+    | 'time-stepper'
   required?: boolean
   hint?: string
   placeholder?: string
@@ -236,6 +249,100 @@ function useOptions(source: FormField['optionsFrom'], values: Record<string, unk
 }
 
 /* -------------------------------------------------------------------------- */
+/* Time stepper — click the arrows instead of typing a timestamp by hand       */
+/* -------------------------------------------------------------------------- */
+
+/** One hour or minute box: the number, with tiny up/down arrows stacked beside it. */
+function TimeUnit({ label, dim, onUp, onDown }: { label: string; dim: boolean; onUp: () => void; onDown: () => void }) {
+  return (
+    <div className="flex items-center">
+      <span className={cn('w-5 text-center text-[13px] tabular-nums', dim ? 'text-ink-3' : 'text-ink')}>{label}</span>
+      <div className="flex flex-col">
+        <button
+          type="button"
+          onClick={onUp}
+          className="flex h-3.5 w-4 items-center justify-center text-ink-3 hover:text-ink"
+          aria-label="Increase"
+        >
+          <ChevronUp className="size-3" />
+        </button>
+        <button
+          type="button"
+          onClick={onDown}
+          className="flex h-3.5 w-4 items-center justify-center text-ink-3 hover:text-ink"
+          aria-label="Decrease"
+        >
+          <ChevronDown className="size-3" />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * A punch time, set by clicking arrows rather than typing a full timestamp.
+ *
+ * The date is fixed to whatever `dateAnchor` names (the record's own work
+ * date) — only the hour and minute are adjustable, since re-dating a punch
+ * by hand is not a thing this control is for. Minutes wrap into the hour and
+ * back, so clicking past midnight or back before it behaves the way a clock
+ * actually does. Empty until the first click: the boxes show a dim default
+ * rather than a value nobody chose, so a record with no punch recorded is
+ * never silently given one just by rendering the form.
+ */
+function TimeStepper({
+  value,
+  dateAnchor,
+  onChange,
+  minuteStep = 15,
+}: {
+  value: string | null
+  dateAnchor: string
+  onChange: (next: string | null) => void
+  minuteStep?: number
+}) {
+  const parsed = React.useMemo(() => {
+    const match = value ? String(value).match(/(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/) : null
+    return match ? { date: match[1]!, minutes: Number(match[2]) * 60 + Number(match[3]) } : null
+  }, [value])
+
+  const isSet = parsed !== null
+  const minutes = parsed?.minutes ?? 8 * 60
+  const date = parsed?.date ?? (dateAnchor || new Date().toISOString().slice(0, 10))
+
+  const set = (nextMinutes: number) => {
+    const wrapped = ((nextMinutes % 1440) + 1440) % 1440
+    const hh = String(Math.floor(wrapped / 60)).padStart(2, '0')
+    const mm = String(wrapped % 60).padStart(2, '0')
+    onChange(`${date} ${hh}:${mm}`)
+  }
+
+  const hh = String(Math.floor(minutes / 60)).padStart(2, '0')
+  const mm = String(minutes % 60).padStart(2, '0')
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="flex items-center rounded-lg border border-line px-1.5">
+        <TimeUnit label={hh} dim={!isSet} onUp={() => set(minutes + 60)} onDown={() => set(minutes - 60)} />
+        <span className={cn('px-0.5 text-[13px]', isSet ? 'text-ink' : 'text-ink-3')}>:</span>
+        <TimeUnit label={mm} dim={!isSet} onUp={() => set(minutes + minuteStep)} onDown={() => set(minutes - minuteStep)} />
+      </div>
+      {isSet && (
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          className="text-ink-3 hover:text-ink"
+          aria-label="Clear this time"
+          title="Clear"
+        >
+          <X className="size-3.5" />
+        </button>
+      )}
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
 /* One field                                                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -376,6 +483,17 @@ function FieldControl({
           />
         )
 
+      case 'time-stepper':
+        return (
+          <div className="flex h-9 items-center">
+            <TimeStepper
+              value={value ? String(value) : null}
+              dateAnchor={values.date ? String(values.date).slice(0, 10) : ''}
+              onChange={onChange}
+            />
+          </div>
+        )
+
       default: {
         const mask = field.mask ? MASKS[field.mask] : null
 
@@ -406,7 +524,8 @@ function FieldControl({
         // A label may only wrap one control. These are several.
         (field.type === 'select' && (searchable || (field.required && options.length > 1 && options.length <= RADIO_THRESHOLD))) ||
         field.type === 'money' ||
-        field.type === 'percent'
+        field.type === 'percent' ||
+        field.type === 'time-stepper'
       }
       className={cn(field.full && 'sm:col-span-2')}
       // Lets the form find the first thing to fix after a failed save.

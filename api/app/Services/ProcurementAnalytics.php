@@ -9,6 +9,7 @@ use App\Models\Rfq;
 use App\Models\Supplier;
 use App\Models\SupplierContract;
 use App\Models\SupplierInvoice;
+use App\Services\Concerns\ResolvesDashboardWindow;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 
@@ -22,26 +23,50 @@ use Illuminate\Support\Collection;
  */
 class ProcurementAnalytics
 {
+    use ResolvesDashboardWindow;
+
     private const MONTHS = 12;
 
     /** Orders in these states have not committed any money. */
     private const DEAD_ORDER_STATES = ['Draft', 'Cancelled'];
 
-    public function dashboard(): array
-    {
+    public function dashboard(
+        string $period = 'last_12m',
+        ?string $from = null,
+        ?string $to = null,
+        ?string $grain = null,
+    ): array {
         $now = CarbonImmutable::now();
-        $windowStart = $now->startOfMonth()->subMonths(self::MONTHS - 1);
 
-        $orders = $this->orders($windowStart);
-        $trend = $this->trend($orders, $now);
+        [$start, $end, $grain, $label, $priorStart, $priorEnd] = $this->resolveWindow(
+            $period, $from, $to, $grain, $now,
+            fn (CarbonImmutable $now) => CarbonImmutable::parse(PurchaseOrder::min('order_date') ?? $now->subYear())->startOfDay(),
+        );
+
+        $orders = $this->orders($start, $end);
+        $priorOrders = $this->orders($priorStart, $priorEnd);
+        $trend = $this->trend($orders, $grain, $start, $end);
 
         return [
             'trend' => $trend,
             'categories' => $this->groupTop($orders, 'category', 8),
             'suppliers' => $this->groupTop($orders, 'supplier', 8),
             'pipeline' => $this->pipeline(),
-            'kpis' => $this->kpis($orders, $trend, $now),
+            'kpis' => $this->kpis($orders, $priorOrders, $now),
             'generatedAt' => $now->toIso8601String(),
+            'window' => [
+                'period' => $period,
+                'grain' => $grain,
+                'from' => $start->toDateString(),
+                'to' => $end->toDateString(),
+                'label' => $label,
+                'days' => $start->diffInDays($end) + 1,
+                'compare' => [
+                    'from' => $priorStart->toDateString(),
+                    'to' => $priorEnd->toDateString(),
+                    'label' => $priorStart->format('j M Y').' – '.$priorEnd->format('j M Y'),
+                ],
+            ],
         ];
     }
 
@@ -50,11 +75,11 @@ class ProcurementAnalytics
      *
      * @return Collection<int, array{month:string,total:float,category:string,supplier:string,receivedPct:int,status:string,expected:?string}>
      */
-    private function orders(CarbonImmutable $windowStart): Collection
+    private function orders(CarbonImmutable $start, CarbonImmutable $end): Collection
     {
         return PurchaseOrder::query()
             ->whereNotIn('purchase_orders.status', self::DEAD_ORDER_STATES)
-            ->where('purchase_orders.order_date', '>=', $windowStart->toDateString())
+            ->whereBetween('purchase_orders.order_date', [$start->toDateString(), $end->toDateString()])
             ->join('suppliers', 'suppliers.id', '=', 'purchase_orders.supplier_id')
             ->get([
                 'purchase_orders.order_date',
@@ -66,7 +91,7 @@ class ProcurementAnalytics
                 'suppliers.name as supplier_name',
             ])
             ->map(fn ($row) => [
-                'month' => CarbonImmutable::parse($row->order_date)->format('Y-m'),
+                'bucket' => $row->order_date,
                 'total' => (float) $row->total,
                 'category' => (string) ($row->category ?: 'Uncategorised'),
                 'supplier' => (string) $row->supplier_name,
@@ -76,30 +101,34 @@ class ProcurementAnalytics
             ]);
     }
 
-    /** Committed spend by month, against what was received. */
-    private function trend(Collection $orders, CarbonImmutable $now): array
+    /** Committed spend bucketed at the resolved grain, against what was received. */
+    private function trend(Collection $orders, string $grain, CarbonImmutable $start, CarbonImmutable $end): array
     {
-        $byMonth = $orders->groupBy('month');
+        $byBucket = $orders->groupBy(fn ($row) => $this->windowBucketKey($grain, CarbonImmutable::parse($row['bucket'])));
 
-        $months = [];
-        for ($i = self::MONTHS - 1; $i >= 0; $i--) {
-            $month = $now->startOfMonth()->subMonths($i);
-            $rows = $byMonth->get($month->format('Y-m'), collect());
+        $rows = [];
+        $cursor = $this->windowFloorTo($grain, $start);
+        $guard = 0;
 
-            $committed = round($rows->sum('total'), 2);
+        while ($cursor->lte($end) && $guard++ < 4000) {
+            $bucketRows = $byBucket->get($this->windowBucketKey($grain, $cursor), collect());
+
+            $committed = round($bucketRows->sum('total'), 2);
             // Value actually delivered, using each order's received share.
-            $received = round($rows->sum(fn ($o) => $o['total'] * min(100, $o['receivedPct']) / 100), 2);
+            $received = round($bucketRows->sum(fn ($o) => $o['total'] * min(100, $o['receivedPct']) / 100), 2);
 
-            $months[] = [
-                'key' => $month->format('Y-m'),
-                'month' => $month->format('M'),
+            $rows[] = [
+                'key' => $this->windowBucketKey($grain, $cursor),
+                'month' => $this->windowBucketLabel($grain, $cursor),
                 'committed' => $committed,
                 'received' => $received,
-                'orders' => $rows->count(),
+                'orders' => $bucketRows->count(),
             ];
+
+            $cursor = $this->windowStep($cursor, $grain);
         }
 
-        return $months;
+        return $rows;
     }
 
     /** Spend share by one dimension of the order, largest first. */
@@ -173,12 +202,10 @@ class ProcurementAnalytics
      * received against an expected date — an empty system has no record, and
      * 0% would read as a failure that never happened.
      */
-    private function kpis(Collection $orders, array $trend, CarbonImmutable $now): array
+    private function kpis(Collection $orders, Collection $priorOrders, CarbonImmutable $now): array
     {
-        $thisMonth = $trend[count($trend) - 1];
-        $lastMonth = $trend[count($trend) - 2] ?? ['committed' => 0.0];
-
         $spend = $orders->sum('total');
+        $priorSpend = $priorOrders->sum('total');
 
         $rfqs = Rfq::where('status', 'Awarded')->get(['estimated_value', 'best_bid', 'savings']);
         $invoices = SupplierInvoice::query()->get(['match_status', 'status', 'due_date', 'amount']);
@@ -186,12 +213,12 @@ class ProcurementAnalytics
         $matched = $invoices->where('match_status', 'Matched')->count();
 
         return [
-            'spendMtd' => $thisMonth['committed'],
-            'spendChange' => $lastMonth['committed'] > 0
-                ? round((($thisMonth['committed'] - $lastMonth['committed']) / $lastMonth['committed']) * 100, 1)
+            'spendMtd' => round($spend, 2),
+            'spendChange' => $priorSpend > 0
+                ? round((($spend - $priorSpend) / $priorSpend) * 100, 1)
                 : 0.0,
             'periodSpend' => round($spend, 2),
-            'ordersThisMonth' => $thisMonth['orders'],
+            'ordersThisMonth' => $orders->count(),
             'avgOrderValue' => $orders->count() > 0 ? round($spend / $orders->count(), 2) : 0.0,
             'activeSuppliers' => Supplier::where('status', 'Active')->count(),
             'openRequisitions' => PurchaseRequisition::whereIn('status', ['Submitted', 'For Approval', 'Approved'])->count(),

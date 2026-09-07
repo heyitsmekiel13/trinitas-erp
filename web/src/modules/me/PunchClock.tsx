@@ -25,8 +25,8 @@ const ACTIONS: {
   tone: 'in' | 'break' | 'back' | 'out'
 }[] = [
   { action: 'in', label: 'Time In', hint: 'Start your day', icon: LogIn, tone: 'in' },
-  { action: 'break-out', label: 'Break Out', hint: 'Going on break', icon: Coffee, tone: 'break' },
   { action: 'break-in', label: 'Break In', hint: 'Back from break', icon: Undo2, tone: 'back' },
+  { action: 'break-out', label: 'Break Out', hint: 'Going on break', icon: Coffee, tone: 'break' },
   { action: 'out', label: 'Time Out', hint: 'End your day', icon: LogOut, tone: 'out' },
 ]
 

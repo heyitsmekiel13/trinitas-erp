@@ -14,8 +14,9 @@ import { maintenanceDashboard, type MaintenanceDashboard } from '@/data/analytic
 import { fmtDate, money, moneyCompact, num, percent } from '@/lib/format'
 import { BarSeriesChart, ChartCard, DonutChart, RankedBars, TrendChart } from '@/components/charts'
 import { StatGrid, StatTile } from '@/components/dashboard/StatTile'
-import { DashboardShell, type Period, type ReportOption } from '@/components/dashboard/DashboardShell'
+import { DashboardShell, type FullPeriod, type Grain, type ReportOption } from '@/components/dashboard/DashboardShell'
 import { useResource } from '@/lib/api'
+import { dashboardWindowQuery } from '@/lib/adminApi'
 import { EmptyState, ErrorState, SkeletonDashboard } from '@/components/ui/feedback'
 import { Avatar, Badge, Card, CardHeader, ProgressBar } from '@/components/ui/primitives'
 
@@ -34,19 +35,22 @@ const orDash = (value: number | null | undefined, format: (v: number) => string)
   value === null || value === undefined ? '—' : format(value)
 
 export function Dashboard() {
-  // The window is fixed at a rolling year server-side, so the period control
-  // would be a lie — cost and downtime are always the trailing twelve months.
-  const [period, setPeriod] = React.useState<Period>('12m')
+  // The asset register, PM schedules and fleet alerts are always the state
+  // right now; only work-order cost and downtime history are windowed.
+  const [period, setPeriod] = React.useState<FullPeriod>('last_12m')
+  const [from, setFrom] = React.useState('')
+  const [to, setTo] = React.useState('')
+  const [grain, setGrain] = React.useState<Grain | null>(null)
 
-  const { data, isLoading, error, refetch } = useResource<MaintenanceDashboard>(
-    'maintenance/dashboard',
-    maintenanceDashboard,
-  )
+  const endpoint = `maintenance/dashboard?${dashboardWindowQuery(period, { from, to, grain: grain ?? undefined })}`
+  const { data, isLoading, error, refetch } = useResource<MaintenanceDashboard>(endpoint, maintenanceDashboard, {
+    enabled: period !== 'custom' || (!!from && !!to),
+  })
 
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />
   if (!data || isLoading) return <SkeletonDashboard />
 
-  const { kpis, trend, costByCategory, statusMix, worstAssets, technicians, upcoming, fleetAlerts } = data
+  const { kpis, trend, costByCategory, statusMix, worstAssets, technicians, upcoming, fleetAlerts, window: win } = data
 
   const reportOptions: ReportOption[] = [
     {
@@ -160,8 +164,18 @@ export function Dashboard() {
     <DashboardShell
       title="Maintenance"
       description="Asset availability, the maintenance backlog and the cost of keeping the fleet and facility running."
-      period={period}
-      onPeriodChange={setPeriod}
+      advanced={{
+        period,
+        onPeriod: setPeriod,
+        from,
+        to,
+        onFrom: setFrom,
+        onTo: setTo,
+        grain,
+        onGrain: setGrain,
+        resolvedGrain: win.grain,
+        windowLabel: win.label,
+      }}
       reportTitle="Maintenance & Asset Report"
       reportOptions={reportOptions}
       excelExport={{

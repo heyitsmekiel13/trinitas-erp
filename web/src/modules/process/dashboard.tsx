@@ -7,6 +7,7 @@ import { Badge, Button, Card } from '@/components/ui/primitives'
 import { EmptyState, ErrorState, SkeletonDashboard } from '@/components/ui/feedback'
 import { StatGrid, StatTile } from '@/components/dashboard/StatTile'
 import { MiniTable } from '@/components/dashboard/MiniTable'
+import { AdvancedPeriodFilter, type FullPeriod, type Grain } from '@/components/dashboard/DashboardShell'
 import { ChartCard, DonutChart, GaugeArc, Histogram, RankedBars, TrendChart } from '@/components/charts'
 import { liveApi } from '@/lib/adminApi'
 import { getComplianceDashboard, type ComplianceDashboard } from '@/lib/workApi'
@@ -21,6 +22,11 @@ import { PersonBadge } from './shared'
  * the number project dashboards reach for when they have nothing to say.
  */
 export function DeliveryDashboard() {
+  const [period, setPeriod] = React.useState<FullPeriod>('mtd')
+  const [from, setFrom] = React.useState('')
+  const [to, setTo] = React.useState('')
+  const [grain, setGrain] = React.useState<Grain | null>(null)
+
   const [data, setData] = React.useState<ComplianceDashboard | null>(null)
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<unknown>(null)
@@ -28,14 +34,14 @@ export function DeliveryDashboard() {
   const load = React.useCallback(async () => {
     setLoading(true)
     try {
-      setData(await getComplianceDashboard())
+      setData(await getComplianceDashboard(period, { from, to, grain: grain ?? undefined }))
       setError(null)
     } catch (e) {
       setError(e)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [period, from, to, grain])
 
   React.useEffect(() => {
     if (!liveApi()) {
@@ -43,9 +49,10 @@ export function DeliveryDashboard() {
 
       return
     }
+    if (period === 'custom' && (!from || !to)) return
 
     void load()
-  }, [load])
+  }, [load, period, from, to])
 
   if (!liveApi()) {
     return (
@@ -72,6 +79,19 @@ export function DeliveryDashboard() {
             Refresh
           </Button>
         }
+      />
+
+      <AdvancedPeriodFilter
+        period={period}
+        onPeriod={setPeriod}
+        from={from}
+        to={to}
+        onFrom={setFrom}
+        onTo={setTo}
+        grain={grain}
+        onGrain={setGrain}
+        resolvedGrain={data?.window.grain}
+        windowLabel={data?.window.label ?? ''}
       />
 
       {error && !data && <ErrorState error={error} onRetry={() => void load()} />}
@@ -126,7 +146,7 @@ export function DeliveryDashboard() {
           <div className="grid gap-4 lg:grid-cols-3">
             <ChartCard
               title="On-time rate"
-              subtitle="Work completed this month, against its deadline"
+              subtitle={`Work completed ${data.window.label.toLowerCase()}, against its deadline`}
               height={240}
               table={{
                 columns: [
@@ -134,7 +154,7 @@ export function DeliveryDashboard() {
                   { key: 'value', label: 'Tasks', align: 'right' },
                 ],
                 rows: [
-                  { name: 'Completed this month', value: k.completedThisMonth },
+                  { name: 'Completed in period', value: k.completedThisMonth },
                   { name: 'Of those, on time', value: k.onTimeThisMonth },
                   { name: 'Of those, late', value: k.completedThisMonth - k.onTimeThisMonth },
                 ] as unknown as Record<string, unknown>[],
@@ -145,7 +165,7 @@ export function DeliveryDashboard() {
                 label="Delivered on time"
                 caption={
                   k.completedThisMonth === 0
-                    ? 'Nothing dated has finished this month'
+                    ? 'Nothing dated has finished in this period'
                     : `${num(k.onTimeThisMonth)} of ${num(k.completedThisMonth)}`
                 }
                 bands={{ warn: 85, bad: 70 }}
@@ -153,12 +173,12 @@ export function DeliveryDashboard() {
             </ChartCard>
 
             <ChartCard
-              title="On-time delivery, by month"
+              title="On-time delivery, by bucket"
               subtitle="The gauge on the left, given a history"
               height={240}
               table={{
                 columns: [
-                  { key: 'name', label: 'Month' },
+                  { key: 'name', label: 'Period' },
                   { key: 'onTime', label: 'On time', align: 'right' },
                   { key: 'late', label: 'Late', align: 'right' },
                 ],
