@@ -85,6 +85,43 @@ class User extends Authenticatable
         return $this->is_super_admin || $this->roles()->where('code', $code)->exists();
     }
 
+    /**
+     * Whether this account may act on a record belonging to `$owner`.
+     *
+     * Two independent ways in, either is enough: the functional permission
+     * (a named role granting `$permissionCode`, e.g. an HR Officer's
+     * `hr.edit`) works regardless of who the record belongs to, since that
+     * role's whole job is that module. Failing that, this account's own
+     * management tier can still grant it — a Top Management position with
+     * no HR role at all can still act on HR's records, and a Supervisory
+     * position can act on their own branch's, because deciding a person's
+     * own team's leave or requisition is that position's job whether or not
+     * it happens to carry the matching department's functional role.
+     *
+     * Rank-and-file gets nothing from this method — their only access to
+     * someone else's record is the functional permission above; acting on
+     * their *own* record while it is still theirs to change is a separate,
+     * narrower rule each resource's own guard applies itself.
+     */
+    public function canActOnRecordOf(?Employee $owner, string $permissionCode): bool
+    {
+        if ($this->hasPermission($permissionCode)) {
+            return true;
+        }
+
+        $actor = $this->employee;
+        if (! $actor || ! $owner) {
+            return false;
+        }
+
+        return match ($actor->position?->management_tier) {
+            Position::TIER_TOP_MANAGEMENT => true,
+            Position::TIER_SUPERVISORY => $actor->branch_unit_id !== null
+                && $actor->branch_unit_id === $owner->branch_unit_id,
+            default => false,
+        };
+    }
+
     public function isLocked(): bool
     {
         return $this->locked_until !== null && $this->locked_until->isFuture();
@@ -94,8 +131,10 @@ class User extends Authenticatable
     public function toAuthPayload(): array
     {
         // hrDepartment as well as branchUnit: the Process & Performance flag
-        // below is decided partly from the person's department.
-        $this->loadMissing(['roles.permissions', 'employee.branchUnit', 'employee.hrDepartment']);
+        // below is decided partly from the person's department. `position`
+        // is loaded for `isManagerial`, which decides whether this account
+        // lands on Command Center or its own Self Service page.
+        $this->loadMissing(['roles.permissions', 'employee.branchUnit', 'employee.hrDepartment', 'employee.position']);
 
         return [
             'id' => (string) $this->id,
@@ -107,6 +146,17 @@ class User extends Authenticatable
                 : ($this->roles->first()->name ?? 'No role assigned'),
             'branch' => $this->employee?->branchUnit?->code ?? 'Head Office',
             'employeeNo' => $this->employee?->employee_no,
+            // Whether the person's own position is flagged managerial in
+            // Org & Positions. Only meaningful for an account mapped to an
+            // employee at all — `employeeNo` is what the client checks
+            // first, since a system/IT account with no employee record is
+            // never subject to this either way.
+            'isManagerial' => (bool) ($this->employee?->position?->is_managerial ?? false),
+            // The role-based access tier: rank_and_file, supervisory or
+            // top_management — see `Position::TIERS`. Null for an account
+            // with no employee record, the same cases `isManagerial` above
+            // is meaningless for.
+            'managementTier' => $this->employee?->position?->management_tier,
             // The department the person belongs to, so a form charged to a
             // department can fill it in rather than ask.
             'departmentId' => $this->employee?->hr_department_id,

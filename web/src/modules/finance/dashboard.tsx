@@ -15,8 +15,9 @@ import { financeDashboard, type FinanceDashboard } from '@/data/analytics'
 import { fmtDate, money, moneyCompact, num, percent } from '@/lib/format'
 import { BarSeriesChart, ChartCard, DonutChart, RankedBars, TrendChart } from '@/components/charts'
 import { StatGrid, StatTile } from '@/components/dashboard/StatTile'
-import { DashboardShell, type Period, type ReportOption } from '@/components/dashboard/DashboardShell'
+import { DashboardShell, type FullPeriod, type Grain, type ReportOption } from '@/components/dashboard/DashboardShell'
 import { useResource } from '@/lib/api'
+import { dashboardWindowQuery } from '@/lib/adminApi'
 import { EmptyState, ErrorState, SkeletonDashboard } from '@/components/ui/feedback'
 import { Badge, Card, CardHeader } from '@/components/ui/primitives'
 
@@ -32,9 +33,15 @@ const orDash = (value: number | null | undefined, format: (v: number) => string)
   value === null || value === undefined ? '—' : format(value)
 
 export function Dashboard() {
-  const [period, setPeriod] = React.useState<Period>('ytd')
+  const [period, setPeriod] = React.useState<FullPeriod>('ytd')
+  const [from, setFrom] = React.useState('')
+  const [to, setTo] = React.useState('')
+  const [grain, setGrain] = React.useState<Grain | null>(null)
 
-  const { data, isLoading, error, refetch } = useResource<FinanceDashboard>('finance/dashboard', financeDashboard)
+  const endpoint = `finance/dashboard?${dashboardWindowQuery(period, { from, to, grain: grain ?? undefined })}`
+  const { data, isLoading, error, refetch } = useResource<FinanceDashboard>(endpoint, financeDashboard, {
+    enabled: period !== 'custom' || (!!from && !!to),
+  })
 
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />
   if (!data || isLoading) return <SkeletonDashboard />
@@ -48,6 +55,7 @@ export function Dashboard() {
     expenseByCategory,
     topDebtors,
     upcomingObligations,
+    window: win,
   } = data
 
   const reportOptions: ReportOption[] = [
@@ -141,8 +149,18 @@ export function Dashboard() {
     <DashboardShell
       title="Finance & Accounting"
       description="Cash, profit and what is owed — every figure derived from what has been posted to the general ledger."
-      period={period}
-      onPeriodChange={setPeriod}
+      advanced={{
+        period,
+        onPeriod: setPeriod,
+        from,
+        to,
+        onFrom: setFrom,
+        onTo: setTo,
+        grain,
+        onGrain: setGrain,
+        resolvedGrain: win.grain,
+        windowLabel: win.label,
+      }}
       reportTitle="Financial Position Report"
       reportOptions={reportOptions}
       excelExport={{

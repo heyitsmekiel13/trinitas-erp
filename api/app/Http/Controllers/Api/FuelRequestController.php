@@ -376,8 +376,36 @@ class FuelRequestController extends Controller
      * afterwards means the approver signed one document and the station reads
      * another — which is exactly why paper forms are filled in ink.
      */
+    /**
+     * Whoever raised it may still change it themselves; failing that, only
+     * their own supervisor or manager, or somebody with a real maintenance
+     * role, may touch it — a colleague in the same department otherwise had
+     * no reason to be able to edit or withdraw somebody else's trip ticket
+     * just because both requests live on the same screen.
+     */
+    private function denyUnlessOwnerOrAuthorized(Request $request, FuelRequest $fuelRequest): ?JsonResponse
+    {
+        $actor = $request->user();
+
+        if ($actor && $fuelRequest->requested_by_id === $actor->id) {
+            return null;
+        }
+
+        if ($actor?->canActOnRecordOf($fuelRequest->requestedBy?->employee, 'maintenance.edit')) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => 'You may only change your own fuel requests, or ones your position lets you act on.',
+        ], 403);
+    }
+
     public function update(Request $request, FuelRequest $fuelRequest): JsonResponse
     {
+        if ($denied = $this->denyUnlessOwnerOrAuthorized($request, $fuelRequest)) {
+            return $denied;
+        }
+
         if (! in_array($fuelRequest->status, ['Draft', 'Submitted'], true)) {
             return response()->json([
                 'message' => $fuelRequest->status === 'Issued'
@@ -408,6 +436,10 @@ class FuelRequestController extends Controller
      */
     public function cancel(Request $request, FuelRequest $fuelRequest): JsonResponse
     {
+        if ($denied = $this->denyUnlessOwnerOrAuthorized($request, $fuelRequest)) {
+            return $denied;
+        }
+
         if (in_array($fuelRequest->status, ['Issued', 'Cancelled'], true)) {
             return response()->json([
                 'message' => $fuelRequest->status === 'Issued'
@@ -438,8 +470,12 @@ class FuelRequestController extends Controller
      * issued one is attached to an invoice; neither is a row to remove, so
      * both are refused with the reason and pointed at cancelling instead.
      */
-    public function destroy(FuelRequest $fuelRequest): JsonResponse
+    public function destroy(Request $request, FuelRequest $fuelRequest): JsonResponse
     {
+        if ($denied = $this->denyUnlessOwnerOrAuthorized($request, $fuelRequest)) {
+            return $denied;
+        }
+
         if (in_array($fuelRequest->status, ['Approved', 'Issued'], true)) {
             return response()->json([
                 'message' => $fuelRequest->status === 'Issued'

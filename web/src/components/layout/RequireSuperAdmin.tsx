@@ -1,5 +1,5 @@
 import { Navigate, useLocation } from 'react-router-dom'
-import { useIsSuperAdmin } from '@/app/auth'
+import { hasCommandCenterAccess, hasDepartmentDashboardAccess, useAuth, useIsSuperAdmin } from '@/app/auth'
 
 /**
  * Keeps Administration to super administrators.
@@ -35,6 +35,51 @@ export function RequireEmployee({ children }: { children: React.ReactNode }) {
 
   if (superAdmin) {
     return <Navigate to="/" replace />
+  }
+
+  return <>{children}</>
+}
+
+/**
+ * Keeps Command Center to Top Management.
+ *
+ * A rank-and-file or supervisory employee's own view is Self Service or
+ * their department's own dashboard — Command Center aggregates figures
+ * across the whole company, which only Top Management's job actually asks.
+ * System/IT accounts with no employee record are unaffected either way —
+ * see {@link hasCommandCenterAccess}.
+ */
+export function RequireCommandCenterAccess({ children }: { children: React.ReactNode }) {
+  const user = useAuth((s) => s.user)
+
+  if (!hasCommandCenterAccess(user)) {
+    return <Navigate to="/me" replace />
+  }
+
+  return <>{children}</>
+}
+
+/**
+ * Keeps a department's own dashboard (Sales Dashboard, Warehouse Dashboard,
+ * ...) to Supervisory and Top Management.
+ *
+ * Rank-and-file keeps every other page in the department — their own
+ * orders, requests, records — so the redirect lands on a sibling page
+ * inside the same department instead of pushing them out of it entirely.
+ * See {@link hasDepartmentDashboardAccess}.
+ */
+export function RequireDepartmentDashboardAccess({
+  fallback,
+  children,
+}: {
+  /** Where to send a rank-and-file employee instead — a sibling page in the same department. */
+  fallback: string
+  children: React.ReactNode
+}) {
+  const user = useAuth((s) => s.user)
+
+  if (!hasDepartmentDashboardAccess(user)) {
+    return <Navigate to={fallback} replace />
   }
 
   return <>{children}</>

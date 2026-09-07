@@ -39,13 +39,13 @@ import {
 import { StatGrid, StatTile } from '@/components/dashboard/StatTile'
 import {
   DashboardShell,
-  slicePeriod,
-  type Period,
+  type FullPeriod,
+  type Grain,
   type ReportOption,
 } from '@/components/dashboard/DashboardShell'
 import { ResourcePage } from '@/components/data/ResourcePage'
 import { queryClient, useResource } from '@/lib/api'
-import { convertQuotation, liveApi, releaseOrder } from '@/lib/adminApi'
+import { convertQuotation, dashboardWindowQuery, liveApi, releaseOrder } from '@/lib/adminApi'
 import { cols } from '@/components/data/columns'
 import { RecordForm } from '@/components/data/RecordForm'
 import * as forms from './forms'
@@ -64,23 +64,28 @@ const orDash = (value: number | null | undefined, format: (v: number) => string)
   value === null || value === undefined ? '—' : format(value)
 
 function Dashboard() {
-  const [period, setPeriod] = React.useState<Period>('12m')
+  const [period, setPeriod] = React.useState<FullPeriod>('last_12m')
+  const [from, setFrom] = React.useState('')
+  const [to, setTo] = React.useState('')
+  const [grain, setGrain] = React.useState<Grain | null>(null)
 
   // One request, one payload: every figure below is aggregated server-side from
-  // the same orders, leads and targets the list pages show.
-  const { data, isLoading, error, refetch } = useResource<SalesDashboard>('sales/dashboard', salesDashboard)
-
-  const trend = React.useMemo(() => slicePeriod(data?.trend ?? [], period), [data, period])
+  // the same orders, leads and targets the list pages show, over exactly the
+  // window the Period + Bucket filter asks for.
+  const endpoint = `sales/dashboard?${dashboardWindowQuery(period, { from, to, grain: grain ?? undefined })}`
+  const { data, isLoading, error, refetch } = useResource<SalesDashboard>(endpoint, salesDashboard, {
+    enabled: period !== 'custom' || (!!from && !!to),
+  })
 
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />
   if (!data || isLoading) return <SkeletonDashboard />
 
-  const { kpis, trend: fullTrend, channels, customers, pipeline } = data
+  const { kpis, trend: fullTrend, channels, customers, pipeline, window: win } = data
   const targets = data.targets.slice().sort((a, b) => b.attainment - a.attainment)
 
-  const periodRevenue = trend.reduce((sum, r) => sum + r.revenue, 0)
-  const periodTarget = trend.reduce((sum, r) => sum + r.target, 0)
-  const periodProfit = trend.reduce((sum, r) => sum + r.grossProfit, 0)
+  const periodRevenue = fullTrend.reduce((sum, r) => sum + r.revenue, 0)
+  const periodTarget = fullTrend.reduce((sum, r) => sum + r.target, 0)
+  const periodProfit = fullTrend.reduce((sum, r) => sum + r.grossProfit, 0)
 
   // Guards for the empty install: a fresh database has no orders, and dividing
   // by a zero target would put NaN% on the screen.
@@ -118,7 +123,7 @@ function Dashboard() {
           kind: 'table',
           title: 'Revenue vs Target',
           columns: ['Month', 'Revenue', 'Cost of sales', 'Gross profit', 'Margin', 'Target', 'Variance'],
-          rows: trend.map((r) => [
+          rows: fullTrend.map((r) => [
             r.month,
             money(r.revenue, { decimals: false }),
             money(r.cost, { decimals: false }),
@@ -130,7 +135,7 @@ function Dashboard() {
           total: [
             'TOTAL',
             money(periodRevenue, { decimals: false }),
-            money(trend.reduce((s, r) => s + r.cost, 0), { decimals: false }),
+            money(fullTrend.reduce((s, r) => s + r.cost, 0), { decimals: false }),
             money(periodProfit, { decimals: false }),
             percent(safe(periodProfit, periodRevenue)),
             money(periodTarget, { decimals: false }),
@@ -215,8 +220,18 @@ function Dashboard() {
     <DashboardShell
       title="Sales & Marketing"
       description="Revenue performance, pipeline health and commercial execution across every channel and territory."
-      period={period}
-      onPeriodChange={setPeriod}
+      advanced={{
+        period,
+        onPeriod: setPeriod,
+        from,
+        to,
+        onFrom: setFrom,
+        onTo: setTo,
+        grain,
+        onGrain: setGrain,
+        resolvedGrain: win.grain,
+        windowLabel: win.label,
+      }}
       reportTitle="Sales Performance Report"
       reportOptions={reportOptions}
       excelExport={{
@@ -233,7 +248,7 @@ function Dashboard() {
     >
       <StatGrid>
         <StatTile
-          label="Revenue this month"
+          label="Revenue this period"
           value={moneyCompact(kpis.revenueMtd)}
           delta={kpis.revenueChange}
           icon={TrendingUp}
@@ -257,7 +272,7 @@ function Dashboard() {
 
       <StatGrid>
         <StatTile label="Average order value" value={moneyCompact(kpis.avgOrderValue)} icon={ShoppingCart} hint="All confirmed orders" />
-        <StatTile label="Orders this month" value={num(kpis.ordersThisMonth)} icon={Banknote} hint="Confirmed and delivered" />
+        <StatTile label="Orders this period" value={num(kpis.ordersThisMonth)} icon={Banknote} hint="Confirmed and delivered" />
         <StatTile label="Active customers" value={num(kpis.activeCustomers)} icon={Users} hint="Trading in the last 12 months" />
         <StatTile
           label="On-time delivery"
@@ -280,7 +295,7 @@ function Dashboard() {
               { key: 'target', label: 'Target', align: 'right', format: (v) => money(Number(v), { decimals: false }) },
               { key: 'grossProfit', label: 'Gross profit', align: 'right', format: (v) => money(Number(v), { decimals: false }) },
             ],
-            rows: trend,
+            rows: fullTrend,
           }}
           footer={
             <span>
@@ -290,7 +305,7 @@ function Dashboard() {
           }
         >
           <TrendChart
-            data={trend}
+            data={fullTrend}
             xKey="month"
             series={[
               { key: 'revenue', label: 'Revenue', slot: 1, kind: 'area' },

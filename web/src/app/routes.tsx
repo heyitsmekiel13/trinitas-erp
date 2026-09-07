@@ -2,8 +2,13 @@ import type { ComponentType } from 'react'
 import { createBrowserRouter, type RouteObject } from 'react-router-dom'
 import { AppShell } from '@/components/layout/AppShell'
 import { SessionGuard } from '@/components/layout/SessionGuard'
-import { RequireEmployee, RequireSuperAdmin } from '@/components/layout/RequireSuperAdmin'
-import { ADMIN_MODULES, DEPARTMENTS } from './registry'
+import {
+  RequireCommandCenterAccess,
+  RequireDepartmentDashboardAccess,
+  RequireEmployee,
+  RequireSuperAdmin,
+} from '@/components/layout/RequireSuperAdmin'
+import { ADMIN_MODULES, DEPARTMENTS, modulePath } from './registry'
 import { DEPARTMENT_CHUNKS, type PageModule } from './departmentChunks'
 
 /** Everything inside the shell requires an authenticated, active session. */
@@ -16,18 +21,35 @@ function GuardedShell() {
 }
 
 function departmentRoutes(): RouteObject[] {
-  return DEPARTMENTS.map((dept) => ({
-    path: dept.id,
-    children: dept.modules.map((mod) => ({
-      ...(mod.id ? { path: mod.id } : { index: true }),
-      lazy: async () => {
-        const chunk = await DEPARTMENT_CHUNKS[dept.id]!()
-        const Component = chunk.PAGES[mod.id]
-        if (!Component) throw new Error(`No page registered for ${dept.id}/${mod.id || 'index'}`)
-        return { Component }
-      },
-    })),
-  }))
+  return DEPARTMENTS.map((dept) => {
+    // Where a rank-and-file employee lands instead of the department's own
+    // dashboard — the next page in the department rather than out of it
+    // entirely, since every other page here is still theirs to use.
+    const firstNonDashboard = dept.modules.find((m) => m.kind !== 'dashboard')
+    const dashboardFallback = firstNonDashboard ? modulePath(dept.id, firstNonDashboard.id) : '/me'
+
+    return {
+      path: dept.id,
+      children: dept.modules.map((mod) => ({
+        ...(mod.id ? { path: mod.id } : { index: true }),
+        lazy: async () => {
+          const chunk = await DEPARTMENT_CHUNKS[dept.id]!()
+          const Component = chunk.PAGES[mod.id]
+          if (!Component) throw new Error(`No page registered for ${dept.id}/${mod.id || 'index'}`)
+
+          if (mod.kind !== 'dashboard') return { Component }
+
+          return {
+            Component: () => (
+              <RequireDepartmentDashboardAccess fallback={dashboardFallback}>
+                <Component />
+              </RequireDepartmentDashboardAccess>
+            ),
+          }
+        },
+      })),
+    }
+  })
 }
 
 export const router = createBrowserRouter([
@@ -155,7 +177,16 @@ export const router = createBrowserRouter([
     children: [
       {
         index: true,
-        lazy: async () => ({ Component: (await import('@/modules/executive')).PAGES[''] as ComponentType }),
+        lazy: async () => {
+          const Component = (await import('@/modules/executive')).PAGES[''] as ComponentType
+          return {
+            Component: () => (
+              <RequireCommandCenterAccess>
+                <Component />
+              </RequireCommandCenterAccess>
+            ),
+          }
+        },
       },
       {
         // Employee self service. Inside the shell so the departments an

@@ -4,7 +4,7 @@ import { cn } from '@/lib/cn'
 import { useCompany } from '@/lib/company'
 import { useUnreadMessages } from '@/lib/unread'
 import { useUi } from '@/app/store'
-import { useAuth, useIsSuperAdmin } from '@/app/auth'
+import { hasCommandCenterAccess, hasDepartmentDashboardAccess, useAuth, useIsSuperAdmin } from '@/app/auth'
 import { ADMIN_MODULES, DEPARTMENTS, modulePath } from '@/app/registry'
 import { prefetchDepartment } from '@/app/departmentChunks'
 import { Tooltip } from '@/components/ui/primitives'
@@ -55,9 +55,18 @@ export function SidebarNav() {
   const setMobileNav = useUi((s) => s.setMobileNav)
   const unread = useUnreadMessages()
   const superAdmin = useIsSuperAdmin()
+  const user = useAuth((s) => s.user)
   // Courtesy filter — see AuthUser.allowedDepartments. `undefined` (older
   // payload, offline bootstrap) and `'all'` both mean "show everything".
-  const allowedDepartments = useAuth((s) => s.user)?.allowedDepartments
+  const allowedDepartments = user?.allowedDepartments
+  // Same courtesy for Command Center: the actual control is
+  // `RequireCommandCenterAccess` on the route, this just keeps the link from
+  // being offered to somebody it would redirect straight past.
+  const commandCenterVisible = hasCommandCenterAccess(user)
+  // And for each department's own dashboard — `RequireDepartmentDashboardAccess`
+  // is the actual control, this just keeps rank-and-file from seeing a link
+  // that would only redirect them to the next page in the department anyway.
+  const dashboardVisible = hasDepartmentDashboardAccess(user)
   const visibleDepartments =
     allowedDepartments === undefined || allowedDepartments === 'all'
       ? DEPARTMENTS
@@ -67,27 +76,29 @@ export function SidebarNav() {
 
   return (
     <nav className="flex-1 space-y-0.5 overflow-y-auto overflow-x-hidden px-3 pb-4" aria-label="Main navigation">
-      {/* Command Center */}
-      <NavLink
-        to="/"
-        end
-        onClick={closeMobile}
-        className={({ isActive }) =>
-          cn(
-            linkBase,
-            collapsed ? 'justify-center px-0 py-2.5' : 'px-2.5 py-2',
-            isActive ? 'bg-brand-50 text-brand-700 dark:bg-brand-950 dark:text-brand-300' : 'text-ink-2 hover:bg-surface-3 hover:text-ink',
-          )
-        }
-      >
-        {({ isActive }) => (
-          <>
-            {isActive && !collapsed && <ActiveMarker />}
-            <LayoutDashboard className="size-[18px] shrink-0" />
-            {!collapsed && <span className="truncate">Command Center</span>}
-          </>
-        )}
-      </NavLink>
+      {/* Command Center — managerial and supervisory positions only */}
+      {commandCenterVisible && (
+        <NavLink
+          to="/"
+          end
+          onClick={closeMobile}
+          className={({ isActive }) =>
+            cn(
+              linkBase,
+              collapsed ? 'justify-center px-0 py-2.5' : 'px-2.5 py-2',
+              isActive ? 'bg-brand-50 text-brand-700 dark:bg-brand-950 dark:text-brand-300' : 'text-ink-2 hover:bg-surface-3 hover:text-ink',
+            )
+          }
+        >
+          {({ isActive }) => (
+            <>
+              {isActive && !collapsed && <ActiveMarker />}
+              <LayoutDashboard className="size-[18px] shrink-0" />
+              {!collapsed && <span className="truncate">Command Center</span>}
+            </>
+          )}
+        </NavLink>
+      )}
 
       {/* Self service. Placed above the departments because for most of the
           workforce it is the only screen in the ERP they will ever open.
@@ -226,12 +237,18 @@ export function SidebarNav() {
         const inSection = pathname === `/${dept.id}` || pathname.startsWith(`/${dept.id}/`)
         const Icon = dept.icon
 
-        // Collapsed rail: the department icon links straight to its dashboard.
+        // Collapsed rail: the department icon links straight to its
+        // dashboard — or, for rank-and-file, the first page that is theirs.
+        const firstNonDashboard = dept.modules.find((m) => m.kind !== 'dashboard')
+        const departmentHome = dashboardVisible || !firstNonDashboard
+          ? `/${dept.id}`
+          : modulePath(dept.id, firstNonDashboard.id)
+
         if (collapsed) {
           return (
             <Tooltip key={dept.id} content={dept.label} className="w-full">
               <NavLink
-                to={`/${dept.id}`}
+                to={departmentHome}
                 onClick={closeMobile}
                 onMouseEnter={() => prefetchDepartment(dept.id)}
                 className={cn(
@@ -268,7 +285,9 @@ export function SidebarNav() {
 
             {isOpen && (
               <div className="mt-0.5 mb-1 ml-[1.4rem] space-y-0.5 border-l border-line pl-2.5">
-                {dept.modules.map((mod) => (
+                {dept.modules
+                  .filter((mod) => dashboardVisible || mod.kind !== 'dashboard')
+                  .map((mod) => (
                   <NavLink
                     key={mod.id || 'index'}
                     to={modulePath(dept.id, mod.id)}

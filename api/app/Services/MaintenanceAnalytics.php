@@ -10,6 +10,7 @@ use App\Models\PmSchedule;
 use App\Models\StockBalance;
 use App\Models\Vehicle;
 use App\Models\WorkOrder;
+use App\Services\Concerns\ResolvesDashboardWindow;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 
@@ -24,7 +25,9 @@ use Illuminate\Support\Collection;
  */
 class MaintenanceAnalytics
 {
-    /** Trend and cost figures cover a rolling year. */
+    use ResolvesDashboardWindow;
+
+    /** Trend and cost figures cover a rolling year by default. */
     private const MONTHS = 12;
 
     /** Registration and insurance inside this many days want attention. */
@@ -32,26 +35,50 @@ class MaintenanceAnalytics
 
     public function __construct(private readonly MaintenanceOperations $operations) {}
 
-    public function dashboard(): array
-    {
+    public function dashboard(
+        string $period = 'last_12m',
+        ?string $from = null,
+        ?string $to = null,
+        ?string $grain = null,
+    ): array {
         $now = CarbonImmutable::now();
-        $from = $now->startOfMonth()->subMonths(self::MONTHS - 1);
 
+        [$start, $end, $grain, $label, $priorStart, $priorEnd] = $this->resolveWindow(
+            $period, $from, $to, $grain, $now,
+            fn (CarbonImmutable $now) => CarbonImmutable::parse(DowntimeEvent::min('occurred_at') ?? $now->subYear())->startOfDay(),
+        );
+
+        // The asset register, PM schedules and fleet alerts are always the
+        // state right now — a status mix has no "as of last quarter". Only
+        // the work-order and downtime history below is scoped to the window.
         $orders = WorkOrder::query()->with('asset')->get();
-        $downtime = DowntimeEvent::query()->where('occurred_at', '>=', $from)->get();
+        $downtime = DowntimeEvent::query()->whereBetween('occurred_at', [$start->toDateString(), $end->endOfDay()->toDateTimeString()])->get();
         $schedules = PmSchedule::query()->with('asset', 'assignee')->get();
         $assets = Asset::query()->where('status', '!=', 'Retired')->get();
 
         return [
-            'kpis' => $this->kpis($orders, $downtime, $schedules, $assets, $from),
-            'trend' => $this->trend($orders, $downtime, $now),
+            'kpis' => $this->kpis($orders, $downtime, $schedules, $assets, $start, $end),
+            'trend' => $this->trend($orders, $downtime, $grain, $start, $end),
             'costByCategory' => $this->costByCategory($orders),
             'statusMix' => $this->statusMix($assets),
-            'worstAssets' => $this->worstAssets($orders, $from),
+            'worstAssets' => $this->worstAssets($orders, $start, $end),
             'technicians' => $this->operations->technicianLoad(),
             'upcoming' => $this->upcoming($schedules),
             'fleetAlerts' => $this->fleetAlerts(),
             'generatedAt' => $now->toIso8601String(),
+            'window' => [
+                'period' => $period,
+                'grain' => $grain,
+                'from' => $start->toDateString(),
+                'to' => $end->toDateString(),
+                'label' => $label,
+                'days' => $start->diffInDays($end) + 1,
+                'compare' => [
+                    'from' => $priorStart->toDateString(),
+                    'to' => $priorEnd->toDateString(),
+                    'label' => $priorStart->format('j M Y').' – '.$priorEnd->format('j M Y'),
+                ],
+            ],
         ];
     }
 
@@ -62,12 +89,13 @@ class MaintenanceAnalytics
         Collection $downtime,
         Collection $schedules,
         Collection $assets,
-        CarbonImmutable $from,
+        CarbonImmutable $start,
+        CarbonImmutable $end,
     ): array {
         $open = $orders->whereIn('status', WorkOrder::OPEN_STATUSES);
         $completed = $orders->where('status', 'Completed');
         $completedInWindow = $completed->filter(
-            fn (WorkOrder $o) => $o->completed_at && $o->completed_at->gte($from),
+            fn (WorkOrder $o) => $o->completed_at && $o->completed_at->gte($start) && $o->completed_at->lte($end->endOfDay()),
         );
 
         $withDuration = $completed->filter(fn (WorkOrder $o) => (float) $o->downtime_hours > 0);
@@ -116,7 +144,7 @@ class MaintenanceAnalytics
                 return $days !== null && $days <= self::EXPIRY_WINDOW_DAYS;
             })->count(),
             'flaggedFuel' => FuelLog::where('is_flagged', true)
-                ->where('logged_at', '>=', $from)
+                ->whereBetween('logged_at', [$start->toDateString(), $end->endOfDay()->toDateTimeString()])
                 ->count(),
             'sparePartsShort' => $this->sparePartsShort(),
         ];
@@ -129,32 +157,36 @@ class MaintenanceAnalytics
      * never plotted on one chart with two axes — that is a picture that can be
      * made to say anything.
      */
-    private function trend(Collection $orders, Collection $downtime, CarbonImmutable $now): array
+    private function trend(Collection $orders, Collection $downtime, string $grain, CarbonImmutable $start, CarbonImmutable $end): array
     {
-        $hours = $downtime->groupBy(fn (DowntimeEvent $e) => CarbonImmutable::parse($e->occurred_at)->format('Y-m'));
+        $hours = $downtime->groupBy(fn (DowntimeEvent $e) => $this->windowBucketKey($grain, CarbonImmutable::parse($e->occurred_at)));
         $cost = $orders
             ->where('status', 'Completed')
-            ->filter(fn (WorkOrder $o) => $o->completed_at)
-            ->groupBy(fn (WorkOrder $o) => $o->completed_at->format('Y-m'));
+            ->filter(fn (WorkOrder $o) => $o->completed_at && $o->completed_at->gte($start) && $o->completed_at->lte($end->endOfDay()))
+            ->groupBy(fn (WorkOrder $o) => $this->windowBucketKey($grain, CarbonImmutable::parse($o->completed_at)));
 
-        $months = [];
-        for ($i = self::MONTHS - 1; $i >= 0; $i--) {
-            $month = $now->startOfMonth()->subMonths($i);
-            $key = $month->format('Y-m');
+        $rows = [];
+        $cursor = $this->windowFloorTo($grain, $start);
+        $guard = 0;
+
+        while ($cursor->lte($end) && $guard++ < 4000) {
+            $key = $this->windowBucketKey($grain, $cursor);
             $jobs = $cost->get($key, collect());
 
-            $months[] = [
+            $rows[] = [
                 'key' => $key,
-                'month' => $month->format('M y'),
+                'month' => $this->windowBucketLabel($grain, $cursor),
                 'downtimeHours' => round($hours->get($key, collect())->sum(fn ($e) => (float) $e->hours), 1),
                 'maintenanceCost' => round($jobs->sum(
                     fn (WorkOrder $o) => (float) $o->labor_cost + (float) $o->parts_cost,
                 ), 2),
                 'jobsCompleted' => $jobs->count(),
             ];
+
+            $cursor = $this->windowStep($cursor, $grain);
         }
 
-        return $months;
+        return $rows;
     }
 
     /** Where the maintenance money goes, by the kind of asset it went on. */
@@ -191,11 +223,11 @@ class MaintenanceAnalytics
      * the problem — and shown against acquisition cost, which is the number
      * that turns "repair it again" into "replace it".
      */
-    private function worstAssets(Collection $orders, CarbonImmutable $from): array
+    private function worstAssets(Collection $orders, CarbonImmutable $start, CarbonImmutable $end): array
     {
         return $orders
             ->where('status', 'Completed')
-            ->filter(fn (WorkOrder $o) => $o->asset && $o->completed_at && $o->completed_at->gte($from))
+            ->filter(fn (WorkOrder $o) => $o->asset && $o->completed_at && $o->completed_at->gte($start) && $o->completed_at->lte($end->endOfDay()))
             ->groupBy('asset_id')
             ->map(function (Collection $rows) {
                 $asset = $rows->first()->asset;

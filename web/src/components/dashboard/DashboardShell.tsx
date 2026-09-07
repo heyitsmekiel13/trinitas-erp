@@ -45,6 +45,125 @@ export function periodLabel(period: Period) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Advanced period + bucket filter — the HR dashboard's server-resolved       */
+/* window, offered here so every other dashboard can adopt the same filter    */
+/* without duplicating it. Additive to the simple Period above: a dashboard   */
+/* passes `advanced` instead of `period`/`onPeriodChange` to opt in.          */
+/* -------------------------------------------------------------------------- */
+
+export type FullPeriod = 'today' | 'wtd' | 'mtd' | 'last_month' | 'qtd' | 'ytd' | 'last_12m' | 'all' | 'custom'
+export type Grain = 'day' | 'month' | 'year'
+
+export const FULL_PERIODS: { value: FullPeriod; label: string }[] = [
+  { value: 'today', label: 'Today' },
+  { value: 'wtd', label: 'WTD' },
+  { value: 'mtd', label: 'MTD' },
+  { value: 'last_month', label: 'Last month' },
+  { value: 'qtd', label: 'QTD' },
+  { value: 'ytd', label: 'YTD' },
+  { value: 'last_12m', label: '12 months' },
+  { value: 'all', label: 'All time' },
+]
+
+export const GRAINS: { value: Grain; label: string }[] = [
+  { value: 'day', label: 'Day' },
+  { value: 'month', label: 'Month' },
+  { value: 'year', label: 'Year' },
+]
+
+function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        'rounded-lg border px-3 py-1.5 text-[13px] font-medium transition-colors',
+        active
+          ? 'border-brand-400 bg-brand-50 text-brand-700 dark:bg-brand-950 dark:text-brand-300'
+          : 'border-line text-ink-2 hover:border-line-strong hover:text-ink',
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+export type AdvancedPeriod = {
+  period: FullPeriod
+  onPeriod: (p: FullPeriod) => void
+  from: string
+  to: string
+  onFrom: (v: string) => void
+  onTo: (v: string) => void
+  grain: Grain | null
+  onGrain: (g: Grain | null) => void
+  resolvedGrain?: Grain
+  /** The server-resolved window label — e.g. "Q3 2026 to date" — shown in the header. */
+  windowLabel: string
+}
+
+/**
+ * Exported on its own, not just via `DashboardShell`'s `advanced` prop — a
+ * dashboard with its own bespoke header and no export menu (Process &
+ * Performance's Delivery Dashboard) can still drop in the same filter bar
+ * without adopting the whole shell around it.
+ */
+export function AdvancedPeriodFilter({ period, onPeriod, from, to, onFrom, onTo, grain, onGrain, resolvedGrain }: AdvancedPeriod) {
+  const today = new Date().toISOString().slice(0, 10)
+
+  return (
+    <div className="card mb-4 flex flex-wrap items-center gap-x-4 gap-y-3 p-3" data-print="hide">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="mr-1 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Period</span>
+        {FULL_PERIODS.map((p) => (
+          <Chip key={p.value} active={period === p.value} onClick={() => onPeriod(p.value)}>
+            {p.label}
+          </Chip>
+        ))}
+        <Chip active={period === 'custom'} onClick={() => onPeriod('custom')}>
+          Custom
+        </Chip>
+      </div>
+
+      {period === 'custom' && (
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="date"
+            value={from}
+            max={to || today}
+            onChange={(e) => onFrom(e.target.value)}
+            aria-label="From"
+            className="h-8 w-[9.5rem] text-[13px]"
+          />
+          <span className="text-[13px] text-ink-3">to</span>
+          <Input
+            type="date"
+            value={to}
+            min={from || undefined}
+            max={today}
+            onChange={(e) => onTo(e.target.value)}
+            aria-label="To"
+            className="h-8 w-[9.5rem] text-[13px]"
+          />
+        </div>
+      )}
+
+      <div className="ml-auto flex items-center gap-1.5">
+        <span className="mr-1 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Bucket</span>
+        <Chip active={grain === null} onClick={() => onGrain(null)}>
+          Auto{resolvedGrain && grain === null ? ` (${resolvedGrain})` : ''}
+        </Chip>
+        {GRAINS.map((g) => (
+          <Chip key={g.value} active={grain === g.value} onClick={() => onGrain(g.value)}>
+            {g.label}
+          </Chip>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
 /* Report builder                                                              */
 /* -------------------------------------------------------------------------- */
 
@@ -61,13 +180,17 @@ function ReportBuilder({
   open,
   onClose,
   defaultTitle,
-  period,
+  periodLabelText,
+  periodValueText,
   options,
 }: {
   open: boolean
   onClose: () => void
   defaultTitle: string
-  period: Period
+  /** The full reporting-window sentence, e.g. "Q3 2026 to date". */
+  periodLabelText: string
+  /** The short chip label for the criteria row, e.g. "QTD". */
+  periodValueText: string
   options: ReportOption[]
 }) {
   const toast = useToast()
@@ -100,11 +223,11 @@ function ReportBuilder({
 
     printReport(sections, {
       title,
-      subtitle: `Reporting period: ${periodLabel(period)}`,
+      subtitle: `Reporting period: ${periodLabelText}`,
       preparedBy: currentUser().name,
       confidential,
       criteria: [
-        { label: 'Period', value: PERIOD_OPTIONS.find((p) => p.value === period)!.label },
+        { label: 'Period', value: periodValueText },
         { label: 'Sections', value: String(chosen.length) },
         { label: 'Branch', value: currentUser().branch },
       ],
@@ -201,6 +324,7 @@ export function DashboardShell({
   description,
   period,
   onPeriodChange,
+  advanced,
   reportTitle,
   reportOptions,
   excelExport,
@@ -208,8 +332,11 @@ export function DashboardShell({
 }: {
   title: string
   description: string
-  period: Period
-  onPeriodChange: (p: Period) => void
+  /** The simple 4-preset filter. Omit when passing `advanced` instead. */
+  period?: Period
+  onPeriodChange?: (p: Period) => void
+  /** The HR-style Period + Bucket filter, with a Custom range and server-resolved window. */
+  advanced?: AdvancedPeriod
   reportTitle: string
   reportOptions: ReportOption[]
   /** Flat data behind the dashboard, for a spreadsheet-shaped export. */
@@ -219,15 +346,20 @@ export function DashboardShell({
   const regionRef = React.useRef<HTMLDivElement>(null)
   const [builderOpen, setBuilderOpen] = React.useState(false)
 
+  const periodText = advanced ? advanced.windowLabel : periodLabel(period!)
+  const periodValueText = advanced
+    ? (FULL_PERIODS.find((p) => p.value === advanced.period)?.label ?? 'Custom')
+    : PERIOD_OPTIONS.find((p) => p.value === period!)!.label
+
   return (
     <div>
       <PageHeader
         title={title}
         description={description}
-        meta={<span className="text-[11px] text-ink-3">Period: {periodLabel(period)}</span>}
+        meta={<span className="text-[11px] text-ink-3">Period: {periodText}</span>}
         actions={
           <>
-            <Segmented value={period} onChange={onPeriodChange} options={PERIOD_OPTIONS} size="sm" />
+            {!advanced && <Segmented value={period!} onChange={onPeriodChange!} options={PERIOD_OPTIONS} size="sm" />}
 
             <Button variant="secondary" size="sm" onClick={() => window.location.reload()} aria-label="Refresh data">
               <RefreshCw className="size-3.5" />
@@ -251,7 +383,7 @@ export function DashboardShell({
                         title,
                         subtitle: description,
                         preparedBy: currentUser().name,
-                        criteria: [{ label: 'Period', value: periodLabel(period) }],
+                        criteria: [{ label: 'Period', value: periodText }],
                       })
                       close()
                     }}
@@ -286,6 +418,8 @@ export function DashboardShell({
         }
       />
 
+      {advanced && <AdvancedPeriodFilter {...advanced} />}
+
       {/* Everything inside this region is what "export as-is" captures. */}
       <div ref={regionRef} className="space-y-4">
         {children}
@@ -295,7 +429,8 @@ export function DashboardShell({
         open={builderOpen}
         onClose={() => setBuilderOpen(false)}
         defaultTitle={reportTitle}
-        period={period}
+        periodLabelText={periodText}
+        periodValueText={periodValueText}
         options={reportOptions}
       />
     </div>

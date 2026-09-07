@@ -1,5 +1,21 @@
 import { dataset } from './dataset'
 import { Rng } from './seed'
+import type { DashboardWindow } from '@/lib/adminApi'
+
+/** A plausible "Last 12 months" window for demo/preview data, which never sees the real filter. */
+export function demoWindow(): DashboardWindow {
+  const now = new Date()
+  const start = new Date(now.getFullYear(), now.getMonth() - 11, 1)
+  return {
+    period: 'last_12m',
+    grain: 'month',
+    from: start.toISOString().slice(0, 10),
+    to: now.toISOString().slice(0, 10),
+    label: 'Last 12 months',
+    days: Math.round((now.getTime() - start.getTime()) / 86400000) + 1,
+    compare: { from: '', to: '', label: '' },
+  }
+}
 
 /**
  * Dashboard series. Everything here aggregates the same document rows the list
@@ -177,6 +193,7 @@ export type SalesDashboard = {
     onTimeDelivery: number | null
     periodRevenue: number
   }
+  window: DashboardWindow
 }
 
 export function salesDashboard(): SalesDashboard {
@@ -208,6 +225,7 @@ export function salesDashboard(): SalesDashboard {
       weightedForecast: pipeline.reduce((s, p) => s + p.weighted, 0),
       periodRevenue: trend.reduce((s, r) => s + r.revenue, 0),
     },
+    window: demoWindow(),
   }
 }
 
@@ -300,6 +318,7 @@ export type ProcurementDashboard = {
     onTimeDelivery: number | null
     contractsExpiring: number
   }
+  window: DashboardWindow
 }
 
 export function procurementDashboard(): ProcurementDashboard {
@@ -374,6 +393,7 @@ export function procurementDashboard(): ProcurementDashboard {
       onTimeDelivery: avgRate(active) ?? null,
       contractsExpiring: contracts.filter((c) => c.status === 'Expiring').length,
     },
+    window: demoWindow(),
   }
 }
 
@@ -489,6 +509,7 @@ export type WarehouseDashboard = {
     expiringSoon: number
     activeSkus: number
   }
+  window: DashboardWindow
 }
 
 export function warehouseDashboard(): WarehouseDashboard {
@@ -546,6 +567,7 @@ export function warehouseDashboard(): WarehouseDashboard {
       expiringSoon: stock.filter((s) => s.status === 'Expiring Soon').length,
       activeSkus: items.length,
     },
+    window: demoWindow(),
   }
 }
 
@@ -634,6 +656,7 @@ export type MaintenanceDashboard = {
     flaggedFuel: number
     sparePartsShort: number
   }
+  window: DashboardWindow
 }
 
 export function maintenanceDashboard(): MaintenanceDashboard {
@@ -769,6 +792,7 @@ export function maintenanceDashboard(): MaintenanceDashboard {
       flaggedFuel: dataset().fuelLogs.filter((f) => f.flagged).length,
       sparePartsShort: 0,
     },
+    window: demoWindow(),
   }
 }
 
@@ -951,6 +975,7 @@ export type FinanceDashboard = {
     taxDue: number
     taxOverdue: number
   }
+  window: DashboardWindow
 }
 
 export function financeDashboard(): FinanceDashboard {
@@ -1045,6 +1070,7 @@ export function financeDashboard(): FinanceDashboard {
       ),
       taxOverdue: taxFilings.filter((t) => t.status === 'Overdue').length,
     },
+    window: demoWindow(),
   }
 }
 

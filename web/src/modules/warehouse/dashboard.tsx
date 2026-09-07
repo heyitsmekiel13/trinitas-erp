@@ -26,8 +26,9 @@ import { useSeedFloor } from './useFloorData'
 import { fmtDate, money, moneyCompact, num, percent } from '@/lib/format'
 import { BarSeriesChart, ChartCard, DonutChart, RankedBars } from '@/components/charts'
 import { StatGrid, StatTile } from '@/components/dashboard/StatTile'
-import { DashboardShell, type Period, type ReportOption } from '@/components/dashboard/DashboardShell'
+import { DashboardShell, type FullPeriod, type Grain, type ReportOption } from '@/components/dashboard/DashboardShell'
 import { useResource } from '@/lib/api'
+import { dashboardWindowQuery } from '@/lib/adminApi'
 import { EmptyState, ErrorState, SkeletonDashboard } from '@/components/ui/feedback'
 import { Badge, Card, CardHeader, ProgressBar } from '@/components/ui/primitives'
 
@@ -45,19 +46,22 @@ const orDash = (value: number | null | undefined, format: (v: number) => string)
   value === null || value === undefined ? '—' : format(value)
 
 export function Dashboard() {
-  // The movement window is fixed at 30 days server-side, so the period control
-  // would be a lie here — throughput is always the last month.
-  const [period, setPeriod] = React.useState<Period>('mtd')
+  // Stock balances are always a snapshot of right now; only the throughput
+  // trend and its movement-based KPIs are scoped to this window.
+  const [period, setPeriod] = React.useState<FullPeriod>('mtd')
+  const [from, setFrom] = React.useState('')
+  const [to, setTo] = React.useState('')
+  const [grain, setGrain] = React.useState<Grain | null>(null)
 
   const dispatches = useOps((s) => s.dispatches)
   const receipts = useOps((s) => s.receipts)
 
   useSeedFloor()
 
-  const { data, isLoading, error, refetch } = useResource<WarehouseDashboard>(
-    'warehouse/dashboard',
-    warehouseDashboard,
-  )
+  const endpoint = `warehouse/dashboard?${dashboardWindowQuery(period, { from, to, grain: grain ?? undefined })}`
+  const { data, isLoading, error, refetch } = useResource<WarehouseDashboard>(endpoint, warehouseDashboard, {
+    enabled: period !== 'custom' || (!!from && !!to),
+  })
 
   // OTIF is the department's headline number, so it is computed here from the
   // dispatch board rather than read off a stored figure that could drift.
@@ -82,7 +86,7 @@ export function Dashboard() {
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />
   if (!data || isLoading) return <SkeletonDashboard />
 
-  const { kpis, throughput, statusMix, valueByCategory, valueByWarehouse, expiring } = data
+  const { kpis, throughput, statusMix, valueByCategory, valueByWarehouse, expiring, window: win } = data
 
   const categoryTotal = valueByCategory.reduce((s, c) => s + c.value, 0)
   const activeDays = throughput.filter((d) => d.movements > 0).length
@@ -195,8 +199,18 @@ export function Dashboard() {
     <DashboardShell
       title="Warehouse"
       description="Stock on hand, what moved through the building, and where the inventory money is sitting."
-      period={period}
-      onPeriodChange={setPeriod}
+      advanced={{
+        period,
+        onPeriod: setPeriod,
+        from,
+        to,
+        onFrom: setFrom,
+        onTo: setTo,
+        grain,
+        onGrain: setGrain,
+        resolvedGrain: win.grain,
+        windowLabel: win.label,
+      }}
       reportTitle="Warehouse Operations Report"
       reportOptions={reportOptions}
       excelExport={{

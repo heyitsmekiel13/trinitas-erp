@@ -12,7 +12,9 @@ use App\Services\AuditLogger;
 use App\Services\ComplianceScanner;
 use App\Services\InfractionMonitor;
 use App\Services\Mailer;
+use App\Services\Concerns\ResolvesDashboardWindow;
 use App\Services\ProcessMetrics;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -30,6 +32,8 @@ use Illuminate\Http\Request;
  */
 class ComplianceController extends Controller
 {
+    use ResolvesDashboardWindow;
+
     public function __construct(
         private readonly ComplianceScanner $scanner,
         private readonly AuditLogger $audit,
@@ -38,9 +42,23 @@ class ComplianceController extends Controller
 
     /* ------------------------------- Overview ------------------------------ */
 
+    /**
+     * The office's own Period + Bucket filter, same resolution HR and the
+     * other department dashboards use. Only "completed in the period" and
+     * its on-time rate are scoped by it — open tasks, overdue ageing and
+     * open observations are always the state right now, the way a backlog
+     * has no "as of last quarter".
+     */
     public function dashboard(Request $request): JsonResponse
     {
         $today = now()->toDateString();
+        $now = CarbonImmutable::now();
+
+        $period = (string) $request->query('period', 'mtd');
+        [$start, $end, $grain, $label, $priorStart, $priorEnd] = $this->resolveWindow(
+            $period, $request->query('from'), $request->query('to'), $request->query('grain'), $now,
+            fn (CarbonImmutable $now) => CarbonImmutable::parse(Task::min('completed_at') ?? $now->subYear())->startOfDay(),
+        );
 
         $open = Task::open();
         $overdue = (clone $open)->whereNotNull('due_date')->whereDate('due_date', '<', $today)->count();
@@ -49,14 +67,14 @@ class ComplianceController extends Controller
         $undated = (clone $open)->whereNull('due_date')->count();
         $openTotal = (clone $open)->count();
 
-        // Completed against a date, this month — the on-time rate everything
-        // else on the page is read against.
-        $month = Task::whereNotNull('completed_at')
+        // Completed against a date, inside the selected window — the on-time
+        // rate everything else on the page is read against.
+        $windowTasks = Task::whereNotNull('completed_at')
             ->whereNotNull('due_date')
-            ->whereBetween('completed_at', [now()->startOfMonth(), now()->endOfMonth()])
+            ->whereBetween('completed_at', [$start->toDateString(), $end->endOfDay()->toDateTimeString()])
             ->get(['due_date', 'completed_at']);
 
-        $onTime = $month->filter(fn ($t) => $t->completed_at->toDateString() <= $t->due_date->toDateString())->count();
+        $onTime = $windowTasks->filter(fn ($t) => $t->completed_at->toDateString() <= $t->due_date->toDateString())->count();
 
         $flags = ComplianceFlag::whereNull('resolved_at')
             ->selectRaw('kind, severity, COUNT(*) as total')
@@ -71,9 +89,9 @@ class ComplianceController extends Controller
                 'dueToday' => $dueToday,
                 'dueThisWeek' => $dueWeek,
                 'undated' => $undated,
-                'completedThisMonth' => $month->count(),
+                'completedThisMonth' => $windowTasks->count(),
                 'onTimeThisMonth' => $onTime,
-                'onTimeRate' => $month->count() > 0 ? round(($onTime / $month->count()) * 100, 1) : null,
+                'onTimeRate' => $windowTasks->count() > 0 ? round(($onTime / $windowTasks->count()) * 100, 1) : null,
                 'openFlags' => (int) $flags->sum('total'),
                 'criticalFlags' => (int) $flags->where('severity', 'Critical')->sum('total'),
             ],
@@ -99,8 +117,59 @@ class ComplianceController extends Controller
              * part.
              */
             'coverage' => $this->scanner->coverage(),
-            'onTimeTrend' => $this->metrics->onTimeTrend(6),
+            'onTimeTrend' => $this->onTimeTrendWindowed($grain, $start, $end),
+            'window' => [
+                'period' => $period,
+                'grain' => $grain,
+                'from' => $start->toDateString(),
+                'to' => $end->toDateString(),
+                'label' => $label,
+                'days' => $start->diffInDays($end) + 1,
+                'compare' => [
+                    'from' => $priorStart->toDateString(),
+                    'to' => $priorEnd->toDateString(),
+                    'label' => $priorStart->format('j M Y').' – '.$priorEnd->format('j M Y'),
+                ],
+            ],
         ]]);
+    }
+
+    /**
+     * The on-time trend bucketed at the resolved grain, over exactly the
+     * selected window — the dashboard's own version, kept separate from
+     * `ProcessMetrics::onTimeTrend()`, which the heavier Flow & Throughput
+     * screen still calls with its own fixed lookback.
+     */
+    private function onTimeTrendWindowed(string $grain, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $tasks = Task::whereNotNull('completed_at')
+            ->whereNotNull('due_date')
+            ->whereBetween('completed_at', [$start->toDateString(), $end->endOfDay()->toDateTimeString()])
+            ->get(['due_date', 'completed_at']);
+
+        $byBucket = $tasks->groupBy(fn (Task $t) => $this->windowBucketKey($grain, CarbonImmutable::parse($t->completed_at)));
+
+        $rows = [];
+        $cursor = $this->windowFloorTo($grain, $start);
+        $guard = 0;
+
+        while ($cursor->lte($end) && $guard++ < 4000) {
+            $bucket = $byBucket->get($this->windowBucketKey($grain, $cursor), collect());
+            $onTime = $bucket->filter(
+                fn (Task $t) => CarbonImmutable::parse($t->completed_at)->toDateString() <= CarbonImmutable::parse($t->due_date)->toDateString(),
+            )->count();
+
+            $rows[] = [
+                'name' => $this->windowBucketLabel($grain, $cursor),
+                'onTime' => $onTime,
+                'late' => $bucket->count() - $onTime,
+                'value' => $bucket->count() > 0 ? round(($onTime / $bucket->count()) * 100, 1) : null,
+            ];
+
+            $cursor = $this->windowStep($cursor, $grain);
+        }
+
+        return $rows;
     }
 
     /**

@@ -739,6 +739,14 @@ class HrController extends Controller
             'decision' => 'required|in:Approved,Rejected,Cancelled',
         ]);
 
+        // An HR role grants this outright; failing that, only the
+        // requester's own supervisor or manager — someone whose branch
+        // actually matches theirs, or who carries no scope limit at all —
+        // may decide it. See `User::canActOnRecordOf()`.
+        if (! $request->user()?->canActOnRecordOf($leave->employee, 'hr.approve')) {
+            abort(403, 'You are not authorized to decide this leave request.');
+        }
+
         $decided = $operations->decideLeave(
             $leave,
             $data['decision'],

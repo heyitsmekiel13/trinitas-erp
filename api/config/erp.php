@@ -2349,16 +2349,27 @@ return [
         'hr/positions' => [
             'model' => Models\Position::class,
             'sort' => ['title' => 'asc'],
-            'map' => ['id' => 'id', 'title' => 'title', 'level' => 'level'],
+            'map' => [
+                'id' => 'id', 'title' => 'title', 'level' => 'level',
+                'isManagerial' => 'is_managerial', 'managementTier' => 'management_tier',
+            ],
             'counts' => ['employees' => 'filled'],
             'write' => [
                 'label' => 'title',
-                'defaults' => ['level' => 1],
+                'defaults' => ['level' => 1, 'is_managerial' => false, 'management_tier' => 'rank_and_file'],
                 'rules' => [
                     'title' => 'required|string|max:120|unique:positions,title',
                     'level' => 'nullable|integer|min:1|max:10',
+                    'isManagerial' => 'nullable|boolean',
+                    // The role-based access tier — see Position::TIERS. What
+                    // this position's people can do and see, independent of
+                    // which department or function they work in.
+                    'managementTier' => 'required|in:rank_and_file,supervisory,top_management',
                 ],
-                'fields' => ['title' => 'title', 'level' => 'level'],
+                'fields' => [
+                    'title' => 'title', 'level' => 'level',
+                    'isManagerial' => 'is_managerial', 'managementTier' => 'management_tier',
+                ],
             ],
         ],
 
@@ -2388,10 +2399,14 @@ return [
                     'shiftId' => 'nullable|integer|exists:shifts,id',
                     // Hours, lateness, undertime and overtime are all worked
                     // out from these by the model — none of them is an input.
+                    // Each later punch must fall after the ones before it;
+                    // `after:` on a field that is itself blank is a no-op, so
+                    // a record with no break recorded still only has to have
+                    // clock-out land after clock-in.
                     'clockIn' => 'nullable|date',
-                    'breakOut' => 'nullable|date',
-                    'breakIn' => 'nullable|date',
-                    'clockOut' => 'nullable|date',
+                    'breakOut' => ['nullable', 'date', 'after:clockIn'],
+                    'breakIn' => ['nullable', 'date', 'after:breakOut', 'after:clockIn'],
+                    'clockOut' => ['nullable', 'date', 'after:breakIn', 'after:clockIn'],
                     'status' => 'required|in:Present,Late,Absent,On Leave,Rest Day,Holiday',
                     'remarks' => 'nullable|string|max:190',
                 ],
@@ -2834,15 +2849,22 @@ return [
 
         'hr/payslips' => [
             'model' => Models\Payslip::class,
-            'with' => ['employee.branchUnit', 'employee.position', 'employee.payrollGroup',
+            'with' => ['employee.branchUnit', 'employee.position', 'employee.payrollGroup', 'employee.hrDepartment',
                 'payrollRun.payrollPeriod', 'lines'],
             'sort' => ['id' => 'asc'],
             'map' => [
                 'id' => 'id', 'periodId' => 'payrollRun.payroll_period_id', 'employeeId' => 'employee_id',
                 'employeeNo' => 'employee.employee_no', 'employee' => 'employee.full_name',
                 'payrollGroup' => 'employee.payrollGroup.code', 'branchUnit' => 'employee.branchUnit.code',
-                'positionTitle' => 'employee.position.title', 'atmAccount' => 'atm_account',
+                'positionTitle' => 'employee.position.title', 'department' => 'employee.hrDepartment.name',
+                'atmAccount' => 'atm_account',
+                // The statutory numbers a printed payslip carries — read-only
+                // here, since the 201 file (HR → Employees) is where they are
+                // actually maintained.
+                'tin' => 'employee.tin', 'sssNo' => 'employee.sss_no',
+                'philhealthNo' => 'employee.philhealth_no', 'pagibigNo' => 'employee.pagibig_no',
                 'period' => 'payrollRun.payrollPeriod.code', 'periodLabel' => 'payrollRun.payrollPeriod.label',
+                'payDate' => 'payrollRun.payrollPeriod.pay_date',
                 'runId' => 'payroll_run_id', 'runNo' => 'payrollRun.run_no', 'status' => 'payrollRun.status',
                 'hourlyRate' => 'hourly_rate', 'dailyRate' => 'daily_rate',
                 'monthlyEquivalent' => 'monthly_equivalent',

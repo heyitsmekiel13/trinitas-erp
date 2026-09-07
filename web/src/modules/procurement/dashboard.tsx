@@ -6,8 +6,9 @@ import { money, moneyCompact, num, percent } from '@/lib/format'
 import type { Supplier } from '@/data/master'
 import { BarSeriesChart, ChartCard, DonutChart, RankedBars, TrendChart } from '@/components/charts'
 import { StatGrid, StatTile } from '@/components/dashboard/StatTile'
-import { DashboardShell, slicePeriod, type Period, type ReportOption } from '@/components/dashboard/DashboardShell'
+import { DashboardShell, type FullPeriod, type Grain, type ReportOption } from '@/components/dashboard/DashboardShell'
 import { useResource } from '@/lib/api'
+import { dashboardWindowQuery } from '@/lib/adminApi'
 import { EmptyState, ErrorState, SkeletonDashboard } from '@/components/ui/feedback'
 import { Badge, Card, CardHeader, ProgressBar } from '@/components/ui/primitives'
 
@@ -25,23 +26,24 @@ const orDash = (value: number | null | undefined, format: (v: number) => string)
   value === null || value === undefined ? '—' : format(value)
 
 export function Dashboard() {
-  const [period, setPeriod] = React.useState<Period>('12m')
+  const [period, setPeriod] = React.useState<FullPeriod>('last_12m')
+  const [from, setFrom] = React.useState('')
+  const [to, setTo] = React.useState('')
+  const [grain, setGrain] = React.useState<Grain | null>(null)
 
-  const { data, isLoading, error, refetch } = useResource<ProcurementDashboard>(
-    'procurement/dashboard',
-    procurementDashboard,
-  )
+  const endpoint = `procurement/dashboard?${dashboardWindowQuery(period, { from, to, grain: grain ?? undefined })}`
+  const { data, isLoading, error, refetch } = useResource<ProcurementDashboard>(endpoint, procurementDashboard, {
+    enabled: period !== 'custom' || (!!from && !!to),
+  })
   const { data: suppliers = [] } = useResource<Supplier[]>('procurement/suppliers', () => dataset().suppliers)
-
-  const trend = React.useMemo(() => slicePeriod(data?.trend ?? [], period), [data, period])
 
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />
   if (!data || isLoading) return <SkeletonDashboard />
 
-  const { kpis, trend: fullTrend, categories, suppliers: topSuppliers, pipeline } = data
+  const { kpis, trend: fullTrend, categories, suppliers: topSuppliers, pipeline, window: win } = data
 
-  const periodSpend = trend.reduce((s, r) => s + r.committed, 0)
-  const periodReceived = trend.reduce((s, r) => s + r.received, 0)
+  const periodSpend = fullTrend.reduce((s, r) => s + r.committed, 0)
+  const periodReceived = fullTrend.reduce((s, r) => s + r.received, 0)
   const categoryTotal = categories.reduce((s, c) => s + c.value, 0)
 
   // A fresh install has no orders; dividing by zero would print NaN%.
@@ -89,7 +91,7 @@ export function Dashboard() {
           kind: 'table',
           title: 'Spend by Month',
           columns: ['Month', 'Committed', 'Delivered', 'Outstanding', 'Orders'],
-          rows: trend.map((t) => [
+          rows: fullTrend.map((t) => [
             t.month,
             money(t.committed, { decimals: false }),
             money(t.received, { decimals: false }),
@@ -101,7 +103,7 @@ export function Dashboard() {
             money(periodSpend, { decimals: false }),
             money(periodReceived, { decimals: false }),
             money(periodSpend - periodReceived, { decimals: false }),
-            trend.reduce((s, t) => s + t.orders, 0),
+            fullTrend.reduce((s, t) => s + t.orders, 0),
           ],
         },
       ],
@@ -171,8 +173,18 @@ export function Dashboard() {
     <DashboardShell
       title="Procurement"
       description="Purchasing performance, supplier reliability and the commitments already made against budget."
-      period={period}
-      onPeriodChange={setPeriod}
+      advanced={{
+        period,
+        onPeriod: setPeriod,
+        from,
+        to,
+        onFrom: setFrom,
+        onTo: setTo,
+        grain,
+        onGrain: setGrain,
+        resolvedGrain: win.grain,
+        windowLabel: win.label,
+      }}
       reportTitle="Procurement Performance Report"
       reportOptions={reportOptions}
       excelExport={{
@@ -188,7 +200,7 @@ export function Dashboard() {
     >
       <StatGrid>
         <StatTile
-          label="Spend this month"
+          label="Spend this period"
           value={moneyCompact(kpis.spendMtd)}
           delta={kpis.spendChange}
           inverse
@@ -250,7 +262,7 @@ export function Dashboard() {
               { key: 'received', label: 'Delivered', align: 'right', format: (v) => money(Number(v), { decimals: false }) },
               { key: 'orders', label: 'Orders', align: 'right' },
             ],
-            rows: trend,
+            rows: fullTrend,
           }}
           footer={
             <span>
@@ -260,7 +272,7 @@ export function Dashboard() {
           }
         >
           <TrendChart
-            data={trend}
+            data={fullTrend}
             xKey="month"
             series={[
               { key: 'committed', label: 'Committed', slot: 2, kind: 'area' },

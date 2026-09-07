@@ -264,13 +264,12 @@ export const attendanceFields: FormField[] = [
   {
     name: 'clockIn',
     label: 'Time in',
-    type: 'text',
-    placeholder: '2026-07-30 08:00',
-    hint: 'Hours, lateness and overtime are all worked out from these two.',
+    type: 'time-stepper',
+    hint: 'Click the arrows to adjust — hours, lateness and overtime are all worked out from these punches.',
   },
-  { name: 'breakOut', label: 'Break out', type: 'text', placeholder: '2026-07-30 12:00' },
-  { name: 'breakIn', label: 'Break in', type: 'text', placeholder: '2026-07-30 13:00' },
-  { name: 'clockOut', label: 'Time out', type: 'text', placeholder: '2026-07-30 17:00' },
+  { name: 'breakOut', label: 'Break out', type: 'time-stepper' },
+  { name: 'breakIn', label: 'Break in', type: 'time-stepper' },
+  { name: 'clockOut', label: 'Time out', type: 'time-stepper' },
   {
     name: 'status',
     label: 'Status',
@@ -390,9 +389,22 @@ export const shiftDefaults = { breakMinutes: 60, graceMinutes: 15, isNightShift:
 export const positionFields: FormField[] = [
   { name: 'title', label: 'Position title', required: true, placeholder: 'Warehouse Supervisor', full: true },
   { name: 'level', label: 'Level', type: 'number', min: 1, max: 10 },
+  { name: 'isManagerial', label: 'Managerial position', type: 'switch' },
+  {
+    name: 'managementTier',
+    label: 'Access tier',
+    type: 'select',
+    required: true,
+    hint: 'What this position can do and see, independent of which department it works in.',
+    options: [
+      { value: 'rank_and_file', label: 'Rank and file' },
+      { value: 'supervisory', label: 'Supervisory' },
+      { value: 'top_management', label: 'Top management' },
+    ],
+  },
 ]
 
-export const positionDefaults = { level: 1 }
+export const positionDefaults = { level: 1, isManagerial: false, managementTier: 'rank_and_file' }
 
 export const departmentFields: FormField[] = [
   { name: 'code', label: 'Code', required: true, placeholder: 'WAREHOUSE' },

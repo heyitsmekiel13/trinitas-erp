@@ -28,6 +28,13 @@ class ResourceWriter
     /** @throws ValidationException */
     public function create(string $resource, array $config, array $input): Model
     {
+        // Checked before validation, same as the update and delete guards —
+        // a refusal here is about who is asking, not whether the fields are
+        // well-formed.
+        if ($refusal = $this->guards->forCreate($resource, $input)) {
+            abort(422, $refusal);
+        }
+
         $write = $this->writeConfig($resource, $config);
         $data = $this->validate($write, $input, null);
 
@@ -67,8 +74,11 @@ class ResourceWriter
         $write = $this->writeConfig($resource, $config);
 
         // Checked before validation, so a refusal is not buried under a list
-        // of field errors the user cannot act on anyway.
-        if ($refusal = $this->guards->forUpdate($resource, $record)) {
+        // of field errors the user cannot act on anyway. The raw input goes
+        // along too — a resource where "approve" is just the generic update
+        // setting `status` to Approved needs to see what is actually
+        // changing, not only the record as it stood before the request.
+        if ($refusal = $this->guards->forUpdate($resource, $record, $input)) {
             abort(422, $refusal);
         }
 

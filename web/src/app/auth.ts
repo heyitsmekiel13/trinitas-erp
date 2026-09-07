@@ -20,6 +20,19 @@ export type AuthUser = {
   avatarInitials?: string
   /** Employee number this account belongs to, when it maps to one. */
   employeeNo?: string
+  /**
+   * Whether this account's own position is flagged managerial in
+   * Org & Positions. Decides whether it lands on Command Center or its own
+   * Self Service page — see `RequireCommandCenterAccess` in routes.tsx.
+   * Meaningless (and ignored) for an account with no `employeeNo` at all.
+   */
+  isManagerial?: boolean
+  /**
+   * The role-based access tier — how much this account can do and see
+   * *within* whatever its functional role grants it. Undefined for an
+   * account with no `employeeNo` at all, same as {@link isManagerial}.
+   */
+  managementTier?: 'rank_and_file' | 'supervisory' | 'top_management'
   /** HR department, so a form charged to one can fill it in rather than ask. */
   departmentId?: number | null
   department?: string | null
@@ -278,6 +291,42 @@ export function currentUser(): AuthUser {
  */
 export function isSuperAdmin(user: AuthUser | null | undefined): boolean {
   return Boolean(user?.permissions?.includes('*'))
+}
+
+/**
+ * A system/IT login with no employee record is never subject to the
+ * management-tier rules below — they only apply to accounts that map to an
+ * actual person. A super administrator is exempt for the same reason
+ * Command Center's own guard always let one through.
+ */
+function isExemptFromTierRules(user: AuthUser | null | undefined): boolean {
+  return isSuperAdmin(user) || !user?.employeeNo
+}
+
+/**
+ * Whether this account may see Command Center — company-wide figures across
+ * every department, which is a Top Management question. Supervisory and
+ * rank-and-file land on their own department dashboard or Self Service
+ * instead — see `RequireCommandCenterAccess`.
+ */
+export function hasCommandCenterAccess(user: AuthUser | null | undefined): boolean {
+  if (isExemptFromTierRules(user)) return true
+
+  return user!.managementTier === 'top_management'
+}
+
+/**
+ * Whether this account may see a department's own dashboard (Sales
+ * Dashboard, Warehouse Dashboard, ...) — aggregated figures across that
+ * whole department, which reads a team's numbers rather than one person's
+ * own work. Rank-and-file keeps every other page in the department (their
+ * own orders, requests, records); only the analytics landing page is
+ * Supervisory and above — see `RequireDepartmentDashboardAccess`.
+ */
+export function hasDepartmentDashboardAccess(user: AuthUser | null | undefined): boolean {
+  if (isExemptFromTierRules(user)) return true
+
+  return user!.managementTier === 'supervisory' || user!.managementTier === 'top_management'
 }
 
 /** Reactive form of {@link isSuperAdmin}, for components. */

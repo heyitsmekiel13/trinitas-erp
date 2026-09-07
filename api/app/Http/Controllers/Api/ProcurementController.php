@@ -23,10 +23,16 @@ use Illuminate\Support\Facades\Cache;
  */
 class ProcurementController extends Controller
 {
-    public function dashboard(ProcurementAnalytics $analytics): JsonResponse
+    public function dashboard(Request $request, ProcurementAnalytics $analytics): JsonResponse
     {
+        $period = (string) $request->query('period', 'last_12m');
+        $from = $request->query('from');
+        $to = $request->query('to');
+        $grain = $request->query('grain');
+        $key = 'procurement-dashboard:'.md5(implode('|', [$period, $from, $to, $grain]));
+
         return response()->json([
-            'data' => Cache::remember('procurement-dashboard', 60, fn () => $analytics->dashboard()),
+            'data' => Cache::remember($key, 60, fn () => $analytics->dashboard($period, $from, $to, $grain)),
         ]);
     }
 

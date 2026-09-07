@@ -196,6 +196,8 @@ class PlatformSeeder extends Seeder
                 ['statutory_schedule', 'second', 'string', 'Cutoff carrying the monthly statutory deduction'],
                 ['working_days_factor', '313', 'integer', 'Days used to derive the monthly equivalent'],
                 ['hours_per_day', '8', 'integer', 'Standard working hours per day'],
+                ['first_half_pay_day', '25', 'integer', 'Calendar day the 1st–15th cut-off is paid, same month'],
+                ['second_half_pay_day', '10', 'integer', 'Calendar day the 16th–end cut-off is paid, the following month'],
             ],
         ];
 
